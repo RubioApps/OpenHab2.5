@@ -1,0 +1,14 @@
+Hi
+This is an automatic message sent by your domotics OpenHab.
+A warning of any sensor (smoke, leakeage, gaz) has been triggered by 
+
+%s 
+
+at the following address:
+
+<Your postal address here>
+
+This means that the people living there are under danger.
+Please react immediately to solve this issue.
+
+
