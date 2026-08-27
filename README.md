@@ -15,4 +15,8 @@ The point here is that you can use my rules to make your owns.
 
 Please note that I use some other code to make it run:
 
+OpenHab (I use an old version 2.5)
+https://github.com/openhab/openhabian
+
+RFLink to MQTT python script
 https://github.com/Iture/RFLinkGateway#rflink-gateway-to-mqtt
