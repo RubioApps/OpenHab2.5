@@ -1,4 +1,5 @@
-*Set of Rules for OpenHab2.5
+Set of Rules for OpenHab2.5
+
 This is the set of rules I use for my OpenHab2.5 automation.
 This is written in Java Eclipse and it covers the main functions:
 - Alarm
@@ -10,4 +11,8 @@ This is written in Java Eclipse and it covers the main functions:
 - System (speed test, RFLink test, etc)
 
 I did not uploaded yet the things, the items and the HTML to better understand how it works.
-The point here is that you can use my rules to make your owns
+The point here is that you can use my rules to make your owns.
+
+Please note that I use some other code to make it run:
+
+https://github.com/Iture/RFLinkGateway#rflink-gateway-to-mqtt
