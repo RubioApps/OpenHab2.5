@@ -1,0 +1,307 @@
+/****************************************************************************************
+System:     OpenHAB version 2.5
+File:       watering.rules
+Purpose:    Set the rules used of the Watering System. 
+Author :    Jaime Rubio 2023 (c)
+*****************************************************************************************/
+
+import org.eclipse.smarthome.model.script.ScriptServiceUtil
+import org.eclipse.xtext.xbase.lib.Procedures
+import java.util.ArrayList
+import java.util.List
+import java.util.HashMap
+
+// Global variables
+var HashMap<String, Timer> ManualTimers = newHashMap
+
+var Timer SwitchTimer = null
+var Integer startTimeIdx = null
+var Integer endTimeIdx = null
+
+val Procedures$Procedure2<HashMap<String, Timer>,String> cancelManualTimer = [ timerMap , zone |    
+
+      timerMap.keySet().forEach[ key |
+        val timer = timerMap.get(key)
+        if( timer !== null && key == zone){
+            timer.cancel()
+        }
+        timerMap.put(key, null)               
+      ]
+  ]       
+
+rule "Set Default Values"
+when
+    System started
+then
+  ManualTimers.put("Z1",null)
+  ManualTimers.put("Z2",null)
+  ManualTimers.put("Z3",null)
+  ManualTimers.put("Z4",null)
+  WateringMode_Auto.sendCommand(OFF)
+  Watering_Toggle.sendCommand(OFF)
+end
+
+rule "Start Watering"
+when 
+  Item Watering_Timer changed from OFF to ON or 
+  Item Watering_RunTime received update 
+then 
+  try {
+    //Catch the moment
+    startTimeIdx  = (now.getMinuteOfDay() / 15).intValue
+    //Get the array of periods ON/OFF within this day
+    var Number currDay = now.getDayOfWeek()
+    var String switchPlan = TransferItem2.state.toString 
+    var String currKey = ""    
+
+    if(currDay == 6 || currDay == 7){ 
+      currKey = "6"      
+    } else {
+      currKey = currDay.toString
+    }
+
+    var String dataSetOfDay = (transform("JSONPATH", "$." + currKey.toString, switchPlan))
+    var Integer valueIdx = dataSetOfDay.indexOf('value')
+    if (valueIdx == -1 || (valueIdx + 7) >= dataSetOfDay.length) {
+      throw new Exception("Could not locate 'value' in day data for key " + currKey)
+    }
+    var String[] switchPlanOfDay = (dataSetOfDay.substring(valueIdx + 7, dataSetOfDay.length - 2)).split(',')
+          
+    //Get the end time from now on
+    endTimeIdx = startTimeIdx
+    var Boolean exitLoop = false    
+    while ((endTimeIdx < switchPlanOfDay.size()) && !exitLoop ) {      
+      if(switchPlanOfDay.get(endTimeIdx).toString == "0"){              
+        exitLoop  = true 
+      } else {
+        endTimeIdx = endTimeIdx + 1       
+      }
+    }      
+    //Trigger watering
+    if (WateringMode_Auto.state == ON){    
+      Watering_Toggle.sendCommand(ON)    
+    }
+  } catch (Exception e) {
+    logError("Watering", "Could not compute today's watering schedule - " + e.message)
+    startTimeIdx = null
+    endTimeIdx = null
+  }
+end
+
+rule "End Watering"
+when 
+  Item Watering_Timer changed from ON to OFF
+then 
+  logInfo("Watering","End watering")
+  startTimeIdx = null
+  endTimeIdx = null
+  Watering_Toggle.sendCommand(OFF)      
+end
+
+rule "Manage Auto Watering"
+when 
+  //Time cron "0/15 * * ? * * *" or        // for debug, trigger each 15 seconds     
+  Time cron "0 0/1 * ? * * *" or 
+  Item Watering_Toggle changed from OFF to ON or
+  Item TransferItem2 changed  or       
+  Item WateringMode_State changed or 
+  Item Watering_RunTime received update or
+  Item Watering_Rain changed or
+  Item OWM_Rain received update
+then 
+  //Once we are in, we can put the toggle to OFF
+  Watering_Toggle.sendCommand(OFF) 
+
+  //Watering is in auto mode with a starting time
+  if ( Watering_Timer.state == ON && WateringMode_State.state == "auto" && startTimeIdx !== null) 
+  {
+    try {
+      if (Debug_Mode.state == ON) {
+        logInfo("Watering", "Start watering")
+      }
+
+      //Current index in the schedule (each day is divided in periods of 15 minutes)
+      var Integer currIdx = now.getMinuteOfDay() / 15            
+      //Calculate the watering current zone
+      var Number durationMax = Float.parseFloat(Watering_RunTime.state.toString)     
+
+      if (durationMax <= 0) {
+        throw new Exception("Watering_RunTime is not a positive value: " + Watering_RunTime.state.toString)
+      }
+
+      //Divide the interval of minutes by the 4 zones, to get the minutes per zone
+      var Number durationMean = (endTimeIdx - startTimeIdx) * 15.0 / 4.0 
+      //Since when we started
+      var Number runTime = now.getMinuteOfDay() - (15.0 * startTimeIdx)
+      //Set the start and end times
+      var DateTime startTime = now.withTimeAtStartOfDay.plusMinutes(15 * startTimeIdx)
+      var DateTime endTime = now.withTimeAtStartOfDay.plusMinutes(15 * endTimeIdx )
+      var DateTime currentTime = now.withTimeAtStartOfDay.plusMinutes(15 * currIdx )
+      //It can start watering only after the start time. 
+      //This avoids a malformed action if the Watering_Timer is not up-to-date
+      if(runTime > 0 && currIdx <= endTimeIdx ){
+        //Set the current zone
+        var Integer currentZone = 0
+
+        //If there is a starting and ending time, we do have a duration
+        if ( durationMean > 0){
+          //Restrict the duration to the maximum value
+          if(durationMean > durationMax){
+            currentZone = 1 + (runTime / durationMax).intValue
+          //If the maximum duration is longer than the period, we restrict the duration to the period
+          } else {            
+            currentZone = 1 + (runTime / durationMean).intValue
+          }       
+        } else{
+          currentZone = 0
+        }
+
+        //Ensure the zone exists
+        if (currentZone <0 || currentZone > 4) {
+          currentZone = 0
+        }   
+
+        var List<String> switchPlanState = new ArrayList
+        switchPlanState.add("Now: " + currentTime.toString("HH:mm"))
+        switchPlanState.add("Start: " + startTime.toString("HH:mm"))
+        switchPlanState.add("End: " + endTime.toString("HH:mm"))
+        switchPlanState.add("Duration: " + ((endTimeIdx - startTimeIdx ) * 15).toString + " min" )
+        switchPlanState.add("Running: " + runTime.toString + " min" )
+        switchPlanState.add("Mean duration: " + durationMean.toString + " min")
+        switchPlanState.add("Max allowed duration: " + durationMax.toString + " min")
+        switchPlanState.add("Zone: Z" + currentZone.toString)
+        Watering_Status.postUpdate(switchPlanState.toString)
+
+        if (Debug_Mode.state == ON) {
+          logInfo("Watering", switchPlanState.toString)
+        }
+
+        //Restrictions to run watering (rain)
+        var Integer zonecounter = 1
+        var String[] fldRain = OWM_Rain.state.toString.split(' ') 
+        var float currentRain = Float.valueOf(fldRain.get(0))
+        var float limitRain = Float.valueOf(Watering_Rain.state.toString)  
+          
+        while (zonecounter <= 4) {      
+          try {
+            var SwitchItem currItem = ScriptServiceUtil.getItemRegistry.getItem("WateringSwitch_Z" + zonecounter) as SwitchItem
+            if (currentZone == zonecounter && currentRain <= limitRain) {      
+              currItem.sendCommand(ON)
+            } else {
+              currItem.sendCommand(OFF)
+            }
+          } catch (Exception e) {
+            logWarn("Watering", "Could not command WateringSwitch_Z" + zonecounter + " - " + e.message)
+          }
+          zonecounter = zonecounter + 1
+        } 
+
+        //Ensure we end
+        if(currentZone == 0) {
+          logInfo("Watering", "End watering")    
+          startTimeIdx = null
+          endTimeIdx = null             
+          gWateringSwitches.sendCommand(OFF)                 
+        }
+
+      } else {
+        if(gWateringSwitches.state == ON){
+          logInfo("Watering", "End watering")                
+          startTimeIdx = null
+          endTimeIdx = null           
+          gWateringSwitches.sendCommand(OFF)               
+        }     
+      }
+    } catch (Exception e) {
+      // Fail-safe: if we can't reliably determine watering state, don't leave zones running unattended.
+      logError("Watering", "Error while managing auto watering, switching everything off - " + e.message)
+      startTimeIdx = null
+      endTimeIdx = null
+      gWateringSwitches.sendCommand(OFF)
+    }
+  } 
+end 
+
+rule "Manage Watering Modes"
+when
+    //Channel 'astro:sun:home:rise#event' triggered START or 
+    //Time cron "0 0/1 * ? * * *" or            // for debug, trigger each 1 minute
+    Item OWM_Rain received update or 
+    Item WateringMode_State changed or 
+    Item Watering_RunTime received update
+then        
+    // Off
+    if (WateringMode_State.state == "off") {
+      logInfo("Watering", "Mode: off")   
+      WateringMode_Off.sendCommand(ON) 
+      WateringMode_Manual.sendCommand(OFF) 
+      WateringMode_Auto.sendCommand(OFF)   
+      gWateringSwitches.sendCommand(OFF)           
+      for (var Integer i = 1; i <= 4; i = i + 1) {
+        val zone = 'Z' + i.toString
+        cancelManualTimer.apply(ManualTimers,zone)
+      } 
+    }
+    // Manual
+    if (WateringMode_State.state.toString == "manual") {
+      logInfo("Watering", "Mode: manual")   
+      WateringMode_Off.sendCommand(OFF) 
+      WateringMode_Manual.sendCommand(ON) 
+      WateringMode_Auto.sendCommand(OFF)           
+    }
+
+    // Auto
+    if (WateringMode_State.state.toString == "auto") {
+      logInfo("Watering", "Mode: auto")   
+      WateringMode_Off.sendCommand(OFF) 
+      WateringMode_Manual.sendCommand(OFF) 
+      WateringMode_Auto.sendCommand(ON)   
+    }    
+end
+
+rule "Activate Manual Watering"
+when
+  Member of gWateringSwitches changed
+then
+  try {
+    val duration = Integer::parseInt(Watering_RunTime.state.toString)
+    val zone = triggeringItem.name.split('_').get(1)
+
+    if (WateringMode_Manual.state == ON)
+    {    
+      if (triggeringItem.state == ON)
+      {      
+        logInfo("Manual Watering", "Manual watering for " + zone + " is now ON")
+        if (ManualTimers.get(zone) === null)
+        {
+          if (Debug_Mode.state == ON) {
+            logInfo("Manual Watering", "Create timer for " + zone)
+          }
+          ManualTimers.put( zone , createTimer(now.plusMinutes(duration), [|   
+            if (Debug_Mode.state == ON) {
+              logInfo("Manual Watering", "Finish timer for " + zone)
+            }
+            var Timer t = ManualTimers.get(zone)
+            t.cancel            
+            ManualTimers.put(zone , null)            
+            try {
+              var SwitchItem currItem = ScriptServiceUtil.getItemRegistry.getItem("WateringSwitch_" + zone) as SwitchItem 
+              currItem.sendCommand(OFF)
+            } catch (Exception e) {
+              logWarn("Manual Watering", "Could not turn off WateringSwitch_" + zone + " - " + e.message)
+            }
+          ]))
+        } else {
+          logInfo("Manual Watering", "Existing timer for " + zone)
+        }
+      } else {
+        if(zone !== null){
+          logInfo("Manual Watering", "Manual watering for " + zone + " is OFF")
+          cancelManualTimer.apply(ManualTimers,zone)
+        }
+      }
+    }
+  } catch (Exception e) {
+    logError("Manual Watering", "Could not process manual watering command - " + e.message)
+  }
+end 

@@ -1,0 +1,249 @@
+/****************************************************************************************
+System:     OpenHAB version 2.5
+File:       timer.rules
+Purpose:    Set the rules used of the timer picker used for heating and watering
+Author :    Jaime Rubio 2023 (c)
+*****************************************************************************************/
+
+import org.eclipse.smarthome.model.script.ScriptServiceUtil
+import org.eclipse.xtext.xbase.lib.Procedures
+import java.util.ArrayList
+
+// timeline/ timepicker control
+// version 0.7.3
+// init values & customize for you own enviroment
+// -----------------------------------------------------------------------------------------------------------
+//
+// requirements: MapDB, JSONpath transformation
+// -----------------------------------------------------------------------------------------------------------
+//  Group  gTimepicker
+//  Group  gTimepickerObserver
+//  String TimelineHelper                 "[%s]"
+//  String TransferItem_XX                "xxxxxx [%s]"                                         (gTimepicker)
+//
+// data structure
+// -----------------------------------------------------------------------------------------------------------
+// val HashMap<String,  ArrayList<String>> timePicker = newHashMap(
+//     "TransferItem1" -> newArrayList('item1','item2',...),                // enum all items to control
+//     "TransferItem2" -> newArrayList('item3')
+//     ...                                                                  // enum all TransferItems
+//     // you control as many widgets as you need
+// )
+//
+
+var java.util.Map <String,  ArrayList<String>> timePicker = newHashMap(
+        "TransferItem1" -> newArrayList('Heating_Timer'),
+        "TransferItem2" -> newArrayList('Watering_Timer')
+  ) 
+
+// -------------------- don't change anything ---------------------------------------------------------------
+var java.util.Map <String,String> oldStates = newHashMap()
+
+////////// persist switch states in helper item
+val Procedures$Procedure2<String,String> persistSwitchState = [ currSwitchPlanName, newState |
+
+  // It's pretty weird, but it works.
+  // this code substitue the last switched state from a single picker in the data strucktur
+  // inside the TimelineHelper item and saved the new value
+
+  try {
+    var helpData_result = ''
+    var helpData = TimelineHelper.state.toString
+    if (TimelineHelper.state != NULL) {
+      var posIndex1 = (helpData).indexOf('"' + currSwitchPlanName + '":{"inactiveLastValue": ')
+      if (posIndex1 != (-1)) {
+        // key exist in the data strucktur
+        var lenKey = ('"' + currSwitchPlanName + '":{"inactiveLastValue": ').length
+        var helpData_firstPart = helpData.substring(0,posIndex1 + lenKey + 1)
+        var helpData_prevValue = helpData.substring(posIndex1 + lenKey + 1)
+        var posIndex2 = helpData_prevValue.indexOf('"')
+        var helpData_lastPart = helpData_prevValue.substring(posIndex2)
+        helpData_result = helpData_firstPart + newState.toString + helpData_lastPart
+      } else {
+        // key doesn't exist in the data strucktur, append this at the end
+        var lenHelpData = helpData.length
+        if (lenHelpData == 0) {
+          helpData_result = '{"'
+        } else {
+          helpData = helpData.substring(0,lenHelpData-1)
+          helpData_result = helpData + ',"'
+        }
+        helpData_result = helpData_result + currSwitchPlanName + '":{"inactiveLastValue": "' + newState.toString + '"}}'
+      }
+      TimelineHelper.sendCommand(helpData_result)
+    }	
+  } catch (Exception e) {
+    logWarn("TimeLine picker", "persistSwitchState failed for " + currSwitchPlanName + " - " + e.message)
+  }
+]
+
+rule "Détection de l'arrivée du Jour"
+when 
+    Channel 'astro:sun:local:daylight#event' triggered START or
+    Channel 'astro:sun:local:daylight#event' triggered END or    
+    Time cron "0 0/15 * * * ?" 
+then 
+    if (Debug_Mode.state == ON) logInfo("Daylight detection", "Init daylight timer")
+
+    if (Day_Start.state == NULL || Day_Start.state == UNDEF || Day_End.state == NULL || Day_End.state == UNDEF) {
+      return;
+    }
+
+    val day_start = new DateTime(Day_Start.state.toString).plusMinutes(10)
+    val day_end = new DateTime(Day_End.state.toString).plusMinutes(-10)            
+    if (!(now.isAfter(day_start) && now.isBefore(day_end))){     
+      Daylight.sendCommand(OFF)
+      if (Debug_Mode.state == ON) logInfo("Daylight detection", "Daylight is off")
+    } else {
+      Daylight.sendCommand(ON) 
+      if (Debug_Mode.state == ON) logInfo("Daylight detection", "Daylight is on")
+    }
+end 
+
+rule "timeline picker - systemstart"
+when
+  System started
+then
+  TimelineHelper.sendCommand("")
+  if (Debug_Mode.state == ON) logInfo("TimeLine picker", "Init timelinehelper item")
+end
+
+rule "TimeLine picker"
+when
+  Member of gTimepicker received update or 
+  Time cron "0 0/1 * * * ?" 
+  //Time cron "0/15 * * ? * * *"        // for debug, trigger each 15 seconds      
+then            
+  gTimepicker.members.forEach[ currSwitchPlan |
+    // Any single malformed timeline entry (bad JSON, unexpected day-key, a scale that doesn't exist, 
+    // an index past the end of an array) would throw and skip
+    // every remaining item AND every remaining picker in this run, not just the broken one.
+    try {
+      var Number currTimeInterval = (now.getMinuteOfDay() / 15).intValue
+      var Number currDay = now.getDayOfWeek()
+      if ((currSwitchPlan.state !== NULL) && (timePicker.keySet().contains(currSwitchPlan.name))) {
+        var String switchPlan = currSwitchPlan.state.toString                 
+        var String currKey = currDay.toString
+        var Boolean timeLineInactive = false
+
+        // check for inactivated timeline
+        var String param100 = (transform("JSONPATH", "$.100", currSwitchPlan.state.toString))
+        if (param100.contains("inactive")) {
+          var String param100inactive = (transform("JSONPATH", "$.100.inactive", currSwitchPlan.state.toString))
+          if (param100inactive == "true") timeLineInactive = true         // timeline is INACTIVE
+        }
+
+        if (timeLineInactive == false) {
+          // check the different week plans 15,17,67; e.g mo-fr, ...
+          if (switchPlan.contains('"key":"17"')) currKey = "17"
+          if (switchPlan.contains('"key":"15"') && (currDay > 0 && currDay < 6)) currKey = "15"
+          if (switchPlan.contains('"key":"67"') && (currDay > 5 )) currKey = "67"
+
+          // determine the scale number in transfer string
+          var Number countScale = 1
+          var Boolean stopLoop = false
+          var Boolean scaleMatched = false
+          while ((countScale < 9) && (!stopLoop)) 
+          {
+            if (switchPlan.contains(countScale.toString + '":')) {
+              if (transform("JSONPATH", "$." + countScale.toString + ".key", switchPlan) == currKey) {
+                scaleMatched = true
+                stopLoop = true
+              } else {
+                countScale = countScale + 1
+              }
+            } else {
+              // error in transfer string
+              logError("timepicker","error in transfer string")
+              stopLoop = true
+            }
+          }
+          if (!scaleMatched) {
+            if (Debug_Mode.state == ON) logInfo("timepicker", "No matching scale found for " + currSwitchPlan.name + " (day key " + currKey + ")")
+            countScale = -1
+          }
+
+          if (countScale != (-1)) 
+          {
+            // is it an event picker or not
+            var String event = (transform("JSONPATH", "$.100.event", switchPlan.toString))
+            var String[] switchStates = (transform("JSONPATH", "$.99", switchPlan.toString)).split(',')
+            var ArrayList<String> itemToSwitch = new ArrayList(timePicker.get(currSwitchPlan.name))
+
+            // extract switch states of dataset; jsonpath is realy unflexible so string operation are used
+            var String dataSetOfDay = (transform("JSONPATH", "$." + countScale.toString, switchPlan))
+            // substring range being invalid, which previously threw StringIndexOutOfBoundsException.
+            var Integer valueIdx = dataSetOfDay.indexOf('value')
+            if (valueIdx == -1 || (valueIdx + 7) >= dataSetOfDay.length) {
+              logError("timepicker", "Could not locate day data for " + currSwitchPlan.name + " at scale " + countScale.toString)
+            } else {
+              var String[] switchPlanOfDay = (dataSetOfDay.substring(valueIdx + 7, dataSetOfDay.length - 2)).split(',')
+              if (!(itemToSwitch.size() == 1 && "".equals(itemToSwitch.get(0))))
+              {
+                if (currTimeInterval >= switchPlanOfDay.length) {
+                  logError("timepicker", "Time interval " + currTimeInterval.toString + " out of range for " + currSwitchPlan.name)
+                } else {
+                  //For each item to switch
+                  itemToSwitch.forEach [ iTS |
+                    // registry doesn't stop the rest of the items on this same picker from updating.
+                    try {
+                      var GenericItem currItem = ScriptServiceUtil.getItemRegistry.getItem(iTS) as GenericItem
+                      var String newStateString = switchPlanOfDay.get(currTimeInterval)
+                      var String newState = ''
+
+                      if (event == 'true') {
+                        var Boolean itemInGroupHit = false
+                        gTimepickerObserver.getMembers().filter[ i | i == currItem].forEach[ i | 
+                          itemInGroupHit = true
+                        ]
+                        if (newStateString != '-1') 
+                        {
+                          if (!itemInGroupHit) {
+                            //save state from item befor event
+                            oldStates.put(iTS,currItem.state.toString)
+                            gTimepickerObserver.addMember(currItem)
+                          }
+                          newState = switchStates.get(Integer::parseInt(newStateString))
+                          // send only commands when current state differenced from new state
+                          if (currItem.state.toString != newState) {
+                          currItem.postUpdate(newState.toString)
+                          persistSwitchState.apply(currSwitchPlan.name, newState)
+                          }
+                        } else {
+                          if (itemInGroupHit) {
+                            gTimepickerObserver.removeMember(currItem)
+                            //restore old state for item
+                            newState = oldStates.get(iTS)
+                            oldStates.remove(iTS)
+                            // send only commands when current state differenced from new state
+                            if (currItem.state.toString != newState) {
+                              if (Debug_Mode.state == ON) logInfo("Timer",currItem.name + " changed to " + newState.toString)
+                              currItem.postUpdate(newState.toString)
+                              persistSwitchState.apply(currSwitchPlan.name, newState)
+                            }
+                          }
+                        }
+                      } else {
+                        newState = switchStates.get(Integer::parseInt(newStateString))
+                        // send only commands when current state differenced from new state
+                        if (currItem.state.toString != newState) {
+                          if (Debug_Mode.state == ON) logInfo("Timer",currItem.name + " changed to " + newState.toString)
+                          currItem.postUpdate(newState.toString)
+                          persistSwitchState.apply(currSwitchPlan.name, newState)
+                        }
+                      }
+                    } catch (Exception e) {
+                      logWarn("timepicker", "Failed to update item " + iTS + " for " + currSwitchPlan.name + " - " + e.message)
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (Exception e) {
+      logError("timepicker", "Unhandled error processing picker " + currSwitchPlan.name + " - " + e.message)
+    }
+  ]
+end

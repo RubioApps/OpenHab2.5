@@ -1,0 +1,425 @@
+/****************************************************************************************
+System:     OpenHAB version 2.5
+File:       home.rules
+Purpose:    Set the rules used of generic functions (Network, RFLink, Air Dryer, Alarm Clock)
+Author :    Jaime Rubio 2023 (c)
+*****************************************************************************************/
+
+import java.util.HashMap
+import java.util.regex.Pattern
+import org.eclipse.smarthome.model.script.ScriptServiceUtil
+import org.eclipse.xtext.xbase.lib.Procedures
+
+//************************************************************************************************
+// Set the default values at Start
+//************************************************************************************************
+
+var Timer timerAlarm = null
+var String VeSyncAPI = "/usr/bin/bash /etc/openhab2/scripts/purifier.sh"
+val HashMap <String , Number > RFLinkOnline = newHashMap("Ping" -> 0 ,"Pong" -> 0)
+var Number RFLinkLostPings = 0 
+var Boolean RFLinkAlertSent = false
+var Number DryerLastChange = 0  
+val Integer RFLINK_LATENCY_WARN_MS = 3000
+val Integer RFLINK_OFFLINE_TIMEOUT_MS = 11 * 60 * 1000
+
+val Procedures$Procedure0 resetSpeedtestUI = [
+    Speedtest_Running.postUpdate("Lancer le test")
+    Speedtest_ResultPing.postUpdate(0)
+    Speedtest_ResultDown.postUpdate(0)
+    Speedtest_ResultUp.postUpdate(0)
+    Speedtest_Summary.postUpdate("(vide)")
+    Speedtest_Rerun.postUpdate(OFF)
+]
+
+rule "Set Default Values"
+when
+    System started
+then
+    Thread::sleep(3000) // let persistance finish restoring a few seconds
+            
+    //Automation ON
+    NetworkOnline_RFLink2mqtt.sendCommand(OFF)
+
+    // Speedtest Init   
+    resetSpeedtestUI.apply()
+
+    // Set last change of Dryer state
+    DryerLastChange = now.millis
+end
+
+//************************************************************************************************
+// Check RFLink status
+//************************************************************************************************
+
+rule "RFLink Ping"
+when
+    Time cron "0 0/5 * * * ?"  //Check every 5 min
+    //Time cron "0/15 * * ? * * *"         // for debug, trigger each 15 seconds   
+then 
+    val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")
+    actionsBroker.publishMQTT( "rflink/cmd", "10;PING;")        
+    RFLinkOnline.put("Ping" , now.millis)    
+    if (Debug_Mode.state == ON) {
+        logInfo("RFLINK_ONLINE","PING")    
+    }
+
+    if ((now.millis - RFLinkOnline.get("Pong")) > RFLINK_OFFLINE_TIMEOUT_MS) {
+        if (NetworkOnline_RFLink2mqtt.state == ON) {
+            NetworkOnline_RFLink2mqtt.sendCommand(OFF)
+            if (Debug_Mode.state == ON) logInfo("RFLINK_ONLINE" , "OFFLINE (no PONG for over " + (RFLINK_OFFLINE_TIMEOUT_MS/60000) + " min)")
+        }
+        if (!RFLinkAlertSent) {
+            say("Warning! The radio frequence receiver does not work")
+            RFLinkAlertSent = true
+        }
+    }
+end
+
+rule "RFLink Status"
+when 
+    Item RFLink_State received update
+then        
+    if (RFLink_State.state == "PONG")
+    {
+        if (Debug_Mode.state == ON) {
+            logInfo("RFLINK_ONLINE",RFLink_State.state.toString)  
+        }
+        RFLinkOnline.put("Pong" , now.millis)
+
+		if (NetworkOnline_RFLink2mqtt.state == OFF) {            
+            NetworkOnline_RFLink2mqtt.sendCommand(ON) 	                    
+            if (Debug_Mode.state == ON) logInfo("RFLINK_ONLINE" , "ONLINE")  
+        }
+
+        RFLinkAlertSent = false
+        RFLinkLostPings = 0
+
+        var Number latency = RFLinkOnline.get("Pong") - RFLinkOnline.get("Ping")
+        if (latency > RFLINK_LATENCY_WARN_MS) {
+            if (Debug_Mode.state == ON) logInfo("RFLINK_ONLINE" , "High Latence (" + latency.toString + " ms)")  
+        }
+    }
+end 
+
+//************************************************************************************************
+// Performs an Internet Speed test, by using the command line speedtest-cli, previously installed
+// in Ubuntu 18.04 (sudo apt install speedtest-cli)
+//************************************************************************************************
+
+rule "Speedtest"
+when    
+    Item Speedtest_Rerun received command //ON
+then
+
+    // Speedtest Init   
+    resetSpeedtestUI.apply()
+    
+    if (Debug_Mode.state == ON) logInfo("Speedtest", "Speed test launched")
+    Speedtest_Running.postUpdate("Test en cours...")
+
+    // update timestamp for last execution
+    Speedtest_ResultDate.postUpdate(new DateTimeType())
+
+    // execute the script, you may have to change the path depending on your system    
+    var String speedtestCliOutput = executeCommandLine('/etc/openhab2/scripts/speedtest.sh', 120*1000)
+
+    if (Debug_Mode.state == ON) logInfo("Speedtest", "--> speedtest output:\n" + speedtestCliOutput + "\n\n")
+
+    Speedtest_Running.postUpdate("Analyse des données...")
+
+    //Find the begining of the report
+    var String patternString = "Idle Latency"
+    val thispattern = Pattern.compile(patternString)
+    val matcher = thispattern.matcher(speedtestCliOutput)
+    
+    // starts off with a fairly simple error check, should be enough to catch all problems I can think of
+    var Boolean parsedOk = false
+    if (matcher.find()) {    
+        speedtestCliOutput = speedtestCliOutput.substring(matcher.start())        
+        speedtestCliOutput = speedtestCliOutput.replaceAll("(\\t)+", "")
+        speedtestCliOutput = speedtestCliOutput.replaceAll("(\\s){2,}", " ")  
+
+        if (Debug_Mode.state == ON) logInfo("Speedtest", speedtestCliOutput )
+
+        //Look up the latency, download and upload values
+        try {
+            var float ping     = 0
+            var float download = 0
+            var float upload   = 0
+
+            patternString = "Idle Latency: (.+?) ms|Download: (.+?) Mbps|Upload: (.+?) Mbps"
+            val thispattern2 = Pattern.compile(patternString)
+            val matcher2 = thispattern2.matcher(speedtestCliOutput)
+            if (!matcher2.find()) throw new Exception("Idle Latency field not found")
+            ping = Float.valueOf(matcher2.group(1))    
+            if (!matcher2.find()) throw new Exception("Download field not found")
+            download = Float.valueOf(matcher2.group(2))        
+            if (!matcher2.find()) throw new Exception("Upload field not found")
+            upload = Float.valueOf(matcher2.group(3))     
+
+            Speedtest_ResultPing.postUpdate(ping)
+            Speedtest_ResultDown.postUpdate(download)
+            Speedtest_ResultUp.postUpdate(upload)
+            Speedtest_Summary.postUpdate(String::format("ᐁ  %.1f Mbit/s  ᐃ %.1f Mbit/s (%.0f ms)", download, upload, ping))
+
+            Speedtest_Running.postUpdate("Lancer le test")
+            
+            if (Debug_Mode.state == ON) logInfo("Speedtest", "Speedtest finished.")
+            parsedOk = true
+        } catch (Exception e) {
+            logError("Speedtest", "Could not parse speedtest output - " + e.message)
+        }
+    }
+
+    if (!parsedOk) {
+        Speedtest_ResultPing.postUpdate(0)
+        Speedtest_ResultDown.postUpdate(0)
+        Speedtest_ResultUp.postUpdate(0)
+        Speedtest_Summary.postUpdate("(vide)")
+        Speedtest_Running.postUpdate("Erreur d'execution")
+        logError("Speedtest", "Error while performing the speedtest. Feedback:\n" + speedtestCliOutput + "\n\n")
+    }
+    Speedtest_Rerun.postUpdate(OFF)
+end
+
+//************************************************************************************************
+// Allow to set the Air Dryer Switch
+//************************************************************************************************
+
+rule "Air Dryer On/Off"
+when
+    Item B_LaundryRoom_Humidity received update or
+    Item B_LaundryRoom_HumidityMax received update
+then
+    try {
+        var float currHumidity = Float.valueOf(B_LaundryRoom_Humidity.state.toString.split(' ').get(0))
+        var float currSetpoint = Float.valueOf(B_LaundryRoom_HumidityMax.state.toString.split(' ').get(0))
+
+        if (Debug_Mode.state == ON) {
+            logInfo("AutoDryer","Last change: " +  ((now.millis - DryerLastChange) / 1000).intValue.toString  + " seconds")    
+        }
+
+        //Change only if last change occured at least 5 minutes ago
+        if(now.millis - DryerLastChange > 300*1000)
+        {
+            if (Debug_Mode.state == ON) {
+                logInfo("AutoDryer","Execute change")    
+            }        
+            DryerLastChange = now.millis
+            if (AutoDryer.state == ON){
+                if (currHumidity > currSetpoint){
+                    B_LaundryRoom_Power.sendCommand(ON)
+                } else {
+                    B_LaundryRoom_Power.sendCommand(OFF)
+                }    
+            }
+        }
+    } catch (Exception e) {
+        logWarn("AutoDryer", "Could not read humidity/setpoint - " + e.message)
+    }
+end
+
+//************************************************************************************************
+// Allow to set the Air Purifier Switch through VeSync API
+//************************************************************************************************
+
+rule "Air Purifier On/Off"
+when
+    Item B_AirPurifier_Switch changed
+then
+    if (Debug_Mode.state == ON){
+        logInfo("Air Purifier",VeSyncAPI)
+    }
+    if (B_AirPurifier_Switch.state == ON){
+        executeCommandLine(VeSyncAPI + " on", 15*1000)               
+    } else {        
+        executeCommandLine(VeSyncAPI + " off", 15*1000)
+    }      
+end
+
+//************************************************************************************************
+// Allow to set the Air Purifier Mode through VeSync API
+//************************************************************************************************
+
+rule "Air Purifier Mode"
+when
+    Item B_AirPurifier_Mode changed
+then
+    if (B_AirPurifier_Mode.state == ON){
+        executeCommandLine(VeSyncAPI + " auto", 15*1000)
+    } else {
+        executeCommandLine(VeSyncAPI + " sleep", 15*1000)
+    }    
+end
+
+//************************************************************************************************
+// Allow to set the Air Purifier Mode through VeSync API
+//************************************************************************************************
+
+rule "Air Purifier Speed"
+when
+    Item B_AirPurifier_Speed changed
+then
+    if (B_AirPurifier_Speed.state == ON){
+        executeCommandLine(VeSyncAPI + " speed_high", 15*1000)
+    } else {
+        executeCommandLine(VeSyncAPI + " auto", 15*1000)
+        //executeCommandLine(VeSyncAPI + " speed_low")
+    }    
+end
+
+//************************************************************************************************
+// Command all curtains by a single command
+//************************************************************************************************
+
+rule "Cascade rollershutter"
+when
+    Item GF_Curtains received command
+then
+    gShutter.members.forEach [ currItem |
+        currItem.sendCommand(receivedCommand)        
+    ]
+end
+
+rule "Rollershutter"
+when
+    Member of gShutter received command
+then
+    if (triggeringItem.getTags.length == 0) {
+        logWarn("Rollershutter", triggeringItem.name + " has no zigbee2mqtt tag configured - command ignored")
+    } else {
+        var s = triggeringItem.getTags.get(0)
+        val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")   
+        switch(receivedCommand.toString){
+            case "UP": { 
+                 actionsBroker.publishMQTT( "zigbee2mqtt/" + s + "/set/state", "OPEN" ,true)
+                 }
+            case "DOWN" : { 
+                 actionsBroker.publishMQTT( "zigbee2mqtt/" + s + "/set/state", "CLOSE" ,true)
+                 }
+            case "STOP":  { 
+                 actionsBroker.publishMQTT( "zigbee2mqtt/" + s + "/set/state", "STOP" ,true)
+                 }        
+            default:  { 
+                 actionsBroker.publishMQTT( "zigbee2mqtt/" + s + "/set", "{\"position\":" + receivedCommand.toString + "}" ,true)
+                 }             
+        }   
+    }
+end
+
+
+//************************************************************************************************
+// Enables the command for RF 433MHz switches, controlled by RFLink
+//************************************************************************************************
+
+rule "RFLink Switches"
+when
+    Member of gDoor received command or 
+    Member of gRFLink received command 
+then
+    if (triggeringItem.getTags.length > 0){
+        var s = triggeringItem.getTags.get(0)
+        if (Debug_Mode.state == ON) logInfo("RFLink",s)
+        var String[] fld = s.split('-')
+
+        //RTS
+        if (fld.length == 3){        
+            var String family = fld.get(0)
+            var String device = fld.get(1)
+            var String button =  fld.get(2)            
+            if (Debug_Mode.state == ON) logInfo("RFLink","rflink/cmd 10;" + family + ";" + device  + ";" + button + ";" + receivedCommand.toString + ";")
+            val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")
+            actionsBroker.publishMQTT( "rflink/cmd", "10;" + family + ";" + device  + ";" + button + ";" + receivedCommand.toString + ";")         
+        }    
+
+        //Switches
+        if (fld.length == 2){        
+            var String family = fld.get(0)
+            var String device = fld.get(1)
+            if (Debug_Mode.state == ON) logInfo("RFLink","Command " + family + "-" + device + " " + receivedCommand.toString )
+            try {
+                var SwitchItem sw = ScriptServiceUtil.getItemRegistry.getItem(family + "-" + device) as SwitchItem         
+                sw.sendCommand(receivedCommand.toString)    
+            } catch (Exception e) {
+                logWarn("RFLink", "Could not find/command item " + family + "-" + device + " - " + e.message)
+            }
+        }  
+
+    }
+end
+
+rule "RFLink Command"
+when
+    Item RFLink_Command received update 
+then 
+    Thread::sleep(500)
+    val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")           
+    actionsBroker.publishMQTT( "rflink/cmd", RFLink_Command.state.toString)
+end 
+
+rule "Button"
+when 
+    Item GF_AllShutters_Button received update
+then
+    try{
+        val newValue = transform("JSONPATH", "$.action", GF_AllShutters_Button.state.toString)
+        switch (newValue)
+        {
+            case "single":{
+                GF_Curtains.sendCommand(UP)
+            }
+            case "double":{
+                GF_Curtains.sendCommand(STOP)
+            }
+            case "hold":{
+                GF_Curtains.sendCommand(DOWN)
+            }            
+        }
+    } catch (Exception e) {
+        logWarn("Button", "Could not process GF_AllShutters_Button payload - " + e.message)
+    }
+
+end 
+
+//************************************************************************************************
+// Manage Alarm Clock from the SmartPhone
+//************************************************************************************************
+
+rule "Alarm Clock"
+when
+    Item AlarmClock changed
+then
+    if (AlarmClock.state == NULL || AlarmClock.state == UNDEF) {
+        return;
+    }
+
+    if (AlarmClock.state as Number == 0) {
+        if (timerAlarm !== null) {
+            timerAlarm.cancel
+            timerAlarm = null
+        }
+        if (Debug_Mode.state == ON) logInfo("Alarm Clock", "All alarms are cancelled")
+    } else {
+        var epoch = new DateTime((AlarmClock.state as Number).longValue)
+        if (Debug_Mode.state == ON) logInfo("Alarm Clock", "Scheduling alarm for " +  epoch.toString)
+
+        if (timerAlarm !== null) {
+            if (Debug_Mode.state == ON) logInfo("Alarm Clock", "Reschedule alarm")
+            timerAlarm.reschedule(epoch)
+        } else {
+            if (Debug_Mode.state == ON) logInfo("Alarm Clock", "New Alarm")
+            timerAlarm = createTimer(epoch,
+                [ |
+                // Turn on stuff, e.g. radio or light                                        
+                //....
+                GF_Curtains.sendCommand("UP")
+                //....
+                timerAlarm.cancel
+                timerAlarm = null                    
+                if (Debug_Mode.state == ON) logInfo("Alarm Clock", "alarm is expired")
+                ]
+            )
+        }
+    }
+end

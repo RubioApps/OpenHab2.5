@@ -1,0 +1,530 @@
+/****************************************************************************************
+System:     OpenHAB version 2.5
+File:       auto.rules
+Purpose:    Set the rules used of the Scenes
+Author :    Jaime Rubio 2023 (c)
+*****************************************************************************************/
+
+import java.util.HashMap
+import java.lang.Math
+import org.eclipse.smarthome.model.script.ScriptServiceUtil
+
+val HashMap <String , Timer >  MotionLightTimer = newHashMap(
+    "GF_Entryway_Power"-> null ,
+    "GF_Lounge_Power" -> null ,
+    "FF_Corridor_Power" -> null
+    )
+
+val HashMap <String , Timer >  AutoSceneTimer = newHashMap(
+    "GF_DiningRoom_Curtain"-> null ,
+    "GF_Lounge_Curtain" -> null ,
+    "GF_MasterBedroom_Curtain" -> null ,    
+    "GF_KitchenOffice" -> null ,
+    "GF_KitchenDoor" -> null ,
+    "GF_KitchenSink" -> null 
+    )
+
+val Procedures$Procedure1<HashMap<String, Timer>> cancelSceneTimers = [ timerMap |
+    timerMap.keySet().forEach[ key |
+        val timer = timerMap.get(key)
+        if (timer !== null) {
+            timer.cancel()
+        }
+        timerMap.put(key, null)
+    ]
+]
+
+var Timer timerAwning = null
+var Integer currentAwning = 0
+var Integer targetAwning = 0
+
+val Integer AWNING_ROLL_STEP_MS = 400          // (1 step * 40000 ms total travel) / 100 steps
+val Integer MOTIONLIGHT_TIMEOUT_MIN = 1        // minutes a motion-triggered light stays on
+val Integer DAY_EDGE_BUFFER_MIN = 30           // buffer applied around Day_Start/Day_End
+val Integer NIGHT_START_BUFFER_MIN = 15
+
+// --- Presence simulation tuning -------------------------------------------------------
+val Double MOTION_LIGHT_ACTIVATION_PROBABILITY = 0.4   // chance a given room "wakes up" per 5-min tick during an active window
+val Double NIGHT_LIGHT_BLIP_PROBABILITY = 0.03         // chance of a brief night light per 5-min tick during deep night
+val Integer NIGHT_LIGHT_BLIP_DURATION_MIN = 4          // how long a deep-night blip stays on
+
+// --- Presence simulation state (computed once per calendar day, see rule below) -------
+var String presenceDayKey = null
+var DateTime presenceMorningStart = null
+var DateTime presenceMorningEnd = null
+var DateTime presenceEveningStart = null
+var DateTime presenceEveningEnd = null
+
+rule "Set Default Values"
+when
+    System started
+then    
+    gMotion.members.forEach[ i | 
+        i.sendCommand(CLOSED)
+    ]
+
+    gMotionLight.members.forEach[ i | 
+        var String switchName = i.name.replace("_Motion","_Power")  
+        try{
+            var GenericItem currItem = ScriptServiceUtil.getItemRegistry.getItem(switchName) as GenericItem            
+            currItem.sendCommand(OFF)
+        }catch(Exception e){
+            logWarn("AutoRules", "Set Default Values: could not reset " + switchName + " - " + e.message)
+        }
+
+        if (MotionLightTimer.get(i.name) !== null){
+            var Timer t = MotionLightTimer.get(i.name)
+            t.cancel            
+            MotionLightTimer.put(i.name , null)
+        }
+    ]    
+
+    try {
+        currentAwning = Integer::parseInt(OU_Terrace_Awning.state.toString)
+    } catch (Exception e) {
+        logWarn("AutoRules", "Set Default Values: OU_Terrace_Awning state unreadable, defaulting to 0 - " + e.message)
+        currentAwning = 0
+    }
+    Terrace_AwningOpen.postUpdate(currentAwning)
+end
+
+//************************************************************************************************
+// Switch on the outdoors lights at noon and switch off every 5 minutes the gargen
+//************************************************************************************************
+
+rule "Automatic outdoors lighting"
+when 
+    Item Daylight changed or 
+    Time cron "0 0/5 * * * ?" 
+    //Time cron "0/5 * * ? * * *"   // for debug, trigger each 5 seconds     
+then 
+    if (Day_End.state == NULL || Day_End.state == UNDEF || Day_Start.state == NULL || Day_Start.state == UNDEF) {
+        return;
+    }
+
+    //Sun's gone!
+    var night_start = new DateTime(Day_End.state.toString).plusMinutes(NIGHT_START_BUFFER_MIN)  
+    var night_end = night_start.plusDays(1).withTimeAtStartOfDay() // till midnight
+    var morning_start = new DateTime(Day_Start.state.toString).minusMinutes(DAY_EDGE_BUFFER_MIN)    
+    var morning_end = new DateTime(Day_Start.state.toString)   
+
+    if(AutoLight.state == ON){
+        if (Daylight.state == OFF) {
+            if ( (now.isAfter(morning_start) && now.isBefore(morning_end)) || (now.isAfter(night_start) && now.isBefore(night_end)) )
+            {
+                gLighting.sendCommand(ON)
+                if (Debug_Mode.state == ON) logInfo("Allumage auto", "ON")
+            } else {
+                gLighting.sendCommand(OFF)
+                if (Debug_Mode.state == ON) logInfo("Allumage auto", "OFF")
+            }
+        } else {
+            gLighting.sendCommand(OFF)
+            if (Debug_Mode.state == ON) logInfo("Allumage auto", "OFF")        
+        }    
+    }
+
+    //For outdoors with RF, ensure they are off during the day
+    if ( (now.isAfter(morning_end) && now.isBefore(night_start)) )
+    {    
+        gGardenLight.sendCommand(OFF)
+        if (Debug_Mode.state == ON) logInfo("Allumage auto", "Ensure garden lights are OFF")  
+    }
+end
+
+//************************************************************************************************
+// Switches the light at sunset when a motion is detect
+//************************************************************************************************
+
+rule "Automatic Motion lighting"
+when
+    Member of gMotionLight changed from CLOSED to OPEN
+then
+    if (Debug_Mode.state == ON) {
+        logInfo("AutoMotionLight", "Motion light triggered")
+    }
+
+    val day_start = new DateTime(Day_Start.state.toString).plusMinutes(30)
+    val day_end = new DateTime(Day_End.state.toString).plusMinutes(-30)
+    var String switchName = triggeringItem.name.replace("_Motion","_Power")      
+    
+    try{
+        var GenericItem currItem = ScriptServiceUtil.getItemRegistry.getItem(switchName) as GenericItem                    
+
+        if (Debug_Mode.state == ON) {
+            logInfo("AutoMotionLight", switchName + " triggered by " + triggeringItem.name + " " + triggeringItem.state.toString)
+        }        
+
+        if (AutoMotionLight.state == ON)
+        {
+            //Reset the timer
+            if (MotionLightTimer.get(switchName) !== null){
+                var Timer t = MotionLightTimer.get(switchName)
+                t.cancel            
+                MotionLightTimer.put(switchName , null)                        
+            }    
+
+            if (!(now.isAfter(day_start) && now.isBefore(day_end))){                        
+                if (triggeringItem.state == OPEN)
+                {                    
+                    currItem.sendCommand(ON) 
+                    MotionLightTimer.put( switchName , createTimer(now.plusMinutes(1), [    
+                        var SwitchItem sw = ScriptServiceUtil.getItemRegistry.getItem(triggeringItem.name.replace("_Motion","_Power")) as SwitchItem         
+                        triggeringItem.postUpdate(CLOSED)
+                        sw.sendCommand(OFF)    
+                        var Timer t = MotionLightTimer.get(triggeringItem.name.replace("_Motion","_Power"))
+                        t.cancel         
+                        MotionLightTimer.put(triggeringItem.name.replace("_Motion","_Power") , null)        
+                        if (Debug_Mode.state == ON) {
+                            logInfo("Autolight", triggeringItem.name.replace("_Motion","_Power") + " OFF")
+                        }
+                    ]))                    
+                }
+            } else{  
+                currItem.sendCommand(OFF) 
+            }
+        } else {
+            gMotionLight.members.forEach[ i | 
+                if (MotionLightTimer.get(i.toString) !== null){
+                    var Timer t = MotionLightTimer.get(i.toString)
+                    t.cancel            
+                    MotionLightTimer.put(i.toString , null)
+                }
+            ]
+            currItem.sendCommand(OFF) 
+        }
+    } catch(Exception e){
+        /* TODO */
+    }
+end
+
+//************************************************************************************************
+// Management of the Awning, depending on the weather conditions and a timeslot
+//************************************************************************************************
+rule "Automatic opening of the awning"
+when 
+    Time cron "0 0/15 * * * ?" or
+    //Time cron "0/30 * * ? * * *" or  // for debug, trigger each 30 seconds       
+    Item Daylight changed or 
+    Item Terrace_Temp_Max received update or 
+    Item Terrace_Wind_Max received update or
+    Item Terrace_UV_Max received update or
+    Item Terrace_StartTime changed or    
+    Item Terrace_EndTime changed
+then 
+    if (AutoAwning.state == ON)
+    {                
+        var today = new DateTime(
+            now.getYear().toString + "-" + 
+            now.getMonthOfYear().toString + "-" + 
+            now.getDayOfMonth().toString + 
+            "T00:00:00.000")
+        var DateTime lunch_start = new DateTime(Terrace_StartTime.state.toString)   
+        var DateTime lunch_end = new DateTime(Terrace_EndTime.state.toString)
+        var minutes = 0
+
+        minutes = lunch_start.getMinuteOfDay()
+        lunch_start = today.plusMinutes(minutes)
+
+        minutes = lunch_end.getMinuteOfDay()
+        lunch_end = today.plusMinutes(minutes)
+        
+        //Current conditions
+        var float wind = 0
+        var float uvindex = 0
+        var float temperature = 0
+        var float wind_max = 0
+        var float uvindex_min = 0
+        var float temperature_min = 0
+
+        try {
+            wind = Float.valueOf(OWM_Wind_Speed.state.toString.split(" ").get(0))
+            uvindex = Float.valueOf(OWM_UVIndex.state.toString)
+            temperature = Float.valueOf(OWM_Temperature.state.toString.split(" ").get(0))        
+
+            //Thresholds
+            wind_max = Float.valueOf(Terrace_Wind_Max.state.toString.split(" ").get(0))
+            uvindex_min = Float.valueOf(Terrace_UV_Min.state.toString)
+            temperature_min = Float.valueOf(Terrace_Temp_Min.state.toString.split(" ").get(0))  
+        } catch (Exception e) {
+            logWarn("AutoRules", "Automatic opening of the awning: could not parse weather/threshold values, skipping run - " + e.message)
+            return;
+        }
+           
+        if (Debug_Mode.state == ON) {
+            logInfo("Autoawning", "Starts: " + lunch_start.toString)
+            logInfo("Autoawning", "Ends: " + lunch_end.toString)
+            logInfo("Autoawning", "Wind: " + OWM_Wind_Speed.state.toString + "; Max: " + Terrace_Wind_Max.state.toString)        
+            logInfo("Autoawning", "Temperature: " + OWM_Temperature.state.toString + "; Min: " + Terrace_Temp_Min.state.toString)
+            logInfo("Autoawning", "UV: " + OWM_UVIndex.state.toString + "; Min: " + Terrace_UV_Min.state.toString)                   
+        }
+
+        //Check wind
+        if( wind > wind_max ){
+           targetAwning = 0
+        } else {
+            //Check luch time
+            if (Daylight.state == ON && (now.isAfter(lunch_start) && now.isBefore(lunch_end))){              
+                //Check sun
+                if (uvindex >= uvindex_min && temperature >= temperature_min )
+                {
+                    //Adjust the target depending on the gap with the wind                          
+                    if(wind >= 0.90 * wind_max) {
+                        targetAwning = 25
+                    } else if(wind >= 0.70 * wind_max) {
+                        targetAwning = 50
+                    } else if(wind >= 0.50 * wind_max) {
+                        targetAwning = 75
+                    } else {
+                        targetAwning = 100
+                    }
+                } else {
+                    targetAwning = 0
+                }
+            } else {
+                targetAwning = 0 
+            }
+        }     
+        
+        if (Debug_Mode.state == ON) {
+            logInfo("Store banne" , "Current: " + currentAwning.toString + "% | Target: " + targetAwning.toString + "%")
+        }
+                
+        if(currentAwning < targetAwning)  {            
+            OU_Terrace_Awning.sendCommand(DOWN)    
+        } else if(currentAwning > targetAwning)  {            
+            OU_Terrace_Awning.sendCommand(UP)    
+        } else {
+            /*DO NOTHING*/
+        }        
+    }
+end
+
+//***************************************************************************************
+//Update the Awning status based on the portion of time taken since the command was sent
+//***************************************************************************************
+rule "Calculate the opening of the Awning"
+when 
+    Item OU_Terrace_Awning received command
+then    
+    //This constant is needed to adjust the opening. Somfy RTS is a One-way protocol
+    //The awning does not send the opening state. Then we have to calculate it
+    //
+    // roll_step = (1 step * Total time to deploy in ms)/ 100 steps )
+    //  - Time for total deployment = 40 s
+    //  - Steps for deployment = 100 steps  
+    // roll_step = (1 * 40000)/100 = 400 ms 
+    //
+    val roll_step = AWNING_ROLL_STEP_MS
+                
+    if (receivedCommand == UP){        
+        timerAwning = createTimer(now.plusMillis(roll_step), [ |                               
+            if(AutoAwning.state == OFF) targetAwning  = 0            
+            if(currentAwning > 0){                                                
+                if(currentAwning > targetAwning)
+                {                      
+                    currentAwning = currentAwning - 1 
+                    Terrace_AwningOpen.postUpdate(currentAwning)                                                                                                       
+                    OU_Terrace_Awning.postUpdate(currentAwning)
+                    if (Debug_Mode.state == ON) {
+                        logInfo("Store banne", "Received: " + receivedCommand.toString + "; Target: " + targetAwning.toString + "; Actual:" + currentAwning.toString )                        }
+                    timerAwning.reschedule(now.plusMillis(roll_step))
+                } else {
+                    OU_Terrace_Awning.sendCommand(STOP)
+                }
+            } else {
+                currentAwning = 0
+                timerAwning.cancel()
+                timerAwning = null                 
+            }    
+        ])         
+    } else if (receivedCommand == DOWN){              
+        timerAwning = createTimer(now.plusMillis(roll_step), [ |                   
+            if(AutoAwning.state == OFF) targetAwning  = 100
+            if(currentAwning < 100){                                
+                if(currentAwning < targetAwning)
+                {                    
+                    currentAwning = currentAwning + 1  
+                    Terrace_AwningOpen.postUpdate(currentAwning)                             
+                    OU_Terrace_Awning.postUpdate(currentAwning)
+                    if (Debug_Mode.state == ON) {
+                        logInfo("Store banne", "Received: " + receivedCommand.toString + "; Target: " + targetAwning.toString + "; Actual:" + currentAwning.toString )
+                    }
+                    timerAwning.reschedule(now.plusMillis(roll_step))                      
+                } else {
+                    OU_Terrace_Awning.sendCommand(STOP)
+                }                         
+            } else {
+                currentAwning = 100
+                timerAwning.cancel()
+                timerAwning = null                 
+            }
+        ]) 
+    } else if (receivedCommand == STOP){    
+        if(AutoAwning.state == OFF) targetAwning  = currentAwning    
+        if (Debug_Mode.state == ON) {
+            logInfo("Store banne", "Received: " + receivedCommand.toString + "; Target: " + targetAwning.toString + "; Actual:" + currentAwning.toString )
+        } 
+
+        OU_Terrace_Awning.postUpdate(currentAwning)
+
+        if(timerAwning !== null){
+            timerAwning.cancel()
+            timerAwning = null                 
+        }        
+    }
+    Terrace_AwningOpen.postUpdate(currentAwning)
+
+end
+
+//***************************************************************************************
+//When pressing the STOP button on the awning key, switch on/off the automatic mode
+//***************************************************************************************
+rule "Awning Button"
+when
+    Item OU_Awning_Key1 received command or 
+    Item OU_Awning_Key2 received command 
+then 
+    if(receivedCommand.toString == "STOP" && AutoAwning.state == ON){
+        AutoAwning.sendCommand(OFF)
+    }
+
+    if(receivedCommand.toString == "STOP" && AutoAwning.state == OFF){
+        AutoAwning.sendCommand(ON)
+    }
+end 
+
+
+//************************************************************************************************
+// Simulate occupation while absence
+//************************************************************************************************
+
+rule "Simulate the presence"
+when 
+    Item Daylight changed or     
+    Item AutoScene changed or  
+    Time cron "0 0/5 * * * ?" 
+    //Time cron "0/30 * * ? * * *"   // for debug, trigger each 30 seconds     
+then 
+    if (AutoScene.state != ON) {
+        cancelSceneTimers.apply(MotionLightTimer)
+        cancelSceneTimers.apply(AutoSceneTimer)      
+        return;
+    }
+
+    if (Day_Start.state == NULL || Day_Start.state == UNDEF || Day_End.state == NULL || Day_End.state == UNDEF) {
+        cancelSceneTimers.apply(MotionLightTimer)
+        cancelSceneTimers.apply(AutoSceneTimer)         
+        return;
+    }
+
+    val String todayKey = now.getYear().toString + "-" + now.getMonthOfYear().toString + "-" + now.getDayOfMonth().toString
+
+    if (presenceDayKey != todayKey) {
+        presenceMorningStart = new DateTime(Day_Start.state.toString).plusMinutes(15 + (Math::random * 15.0).intValue)
+        presenceMorningEnd   = presenceMorningStart.plusMinutes(60)
+        presenceEveningStart = new DateTime(Day_End.state.toString).plusMinutes(15 - (Math::random * 15.0).intValue)
+        presenceEveningEnd   = presenceEveningStart.plusDays(1).withTimeAtStartOfDay().plusMinutes(1)
+        presenceDayKey = todayKey
+
+        if (Debug_Mode.state == ON) {
+            logInfo("Autoscene", "Presence windows for " + todayKey +
+                " : Morning " + presenceMorningStart.toString + " to " + presenceMorningEnd.toString +
+                " | Evening " + presenceEveningStart.toString + " to " + presenceEveningEnd.toString)
+        }
+    }
+
+    // The day splits into four consecutive, non-overlapping segments:
+    // morning-active -> daytime gap (nobody home) -> evening-active -> deep night
+    val boolean isMorningWindow = now.isAfter(presenceMorningStart) && now.isBefore(presenceMorningEnd)
+    val boolean isEveningWindow = now.isAfter(presenceEveningStart) && now.isBefore(presenceEveningEnd)
+    val boolean isDaytimeGap    = now.isAfter(presenceMorningEnd) && now.isBefore(presenceEveningStart)
+    val boolean isActiveWindow  = isMorningWindow || isEveningWindow
+    val boolean isDeepNight     = !isActiveWindow && !isDaytimeGap
+
+    if (Debug_Mode.state == ON && isActiveWindow) {
+        logInfo("Autoscene", (if (isMorningWindow) "Morning" else "Evening") + ": active")
+    }
+
+    // --- Shutters: only move during an active window, otherwise stay/return closed ---
+    if (isActiveWindow) {
+        gShutter.members.forEach [ currItem |                
+            if (AutoSceneTimer.get(currItem.name) === null)
+            {     
+                var Integer gap_time = (Math::random * 20.0).intValue
+                if (Debug_Mode.state == ON) {
+                    logInfo("Autoscene", currItem.name + " will move in " + gap_time.toString + " minutes")
+                }
+                AutoSceneTimer.put(currItem.name, createTimer(now.plusMinutes(gap_time), [  
+                    var Integer v = if (isMorningWindow) 50 + (Math::random * 25.0).intValue else 50 - (Math::random * 25.0).intValue
+                    currItem.sendCommand(v)
+                    if (Debug_Mode.state == ON) {
+                        logInfo("Autoscene", (if (isMorningWindow) "Open " else "Close ") + currItem.name + " to " + v.toString)   
+                    }                        
+                    var Timer t = AutoSceneTimer.get(currItem.name)
+                    t.cancel         
+                    AutoSceneTimer.put(currItem.name,null)
+                    ])
+                )
+            }
+        ] 
+    } else if (isDeepNight) {        
+        gShutter.members.forEach [ currItem |      
+            val awn = Integer::parseInt(currItem.state.toString)
+            if (awn < 100) currItem.sendCommand(DOWN)
+        ]                
+    } else {
+        gShutter.members.forEach [ currItem |      
+            val awn = Integer::parseInt(currItem.state.toString)
+            if (awn > 0) currItem.sendCommand(UP)
+        ]
+    }
+
+    // --- Motion lights: active-window "room wakes up" chance, deep-night rare blip, or off ---
+    gMotionLight.members.forEach [ currItem |
+        val String switchName = currItem.name.replace("_Motion", "_Power")
+
+        if (isActiveWindow) {
+            if (MotionLightTimer.get(switchName) === null && Math::random < MOTION_LIGHT_ACTIVATION_PROBABILITY) {
+                var SwitchItem sw = ScriptServiceUtil.getItemRegistry.getItem(switchName) as SwitchItem
+                sw.sendCommand(ON)
+                var Integer gap_time = MOTIONLIGHT_TIMEOUT_MIN + (Math::random * 20.0).intValue
+                if (Debug_Mode.state == ON) {
+                    logInfo("Autoscene", switchName + " on, will be off in " + gap_time.toString + " minutes")
+                }
+                MotionLightTimer.put(switchName, createTimer(now.plusMinutes(gap_time), [    
+                    currItem.sendCommand(CLOSED)    
+                    var SwitchItem tsw = ScriptServiceUtil.getItemRegistry.getItem(switchName) as SwitchItem
+                    tsw.sendCommand(OFF)
+                    var Timer t = MotionLightTimer.get(switchName)
+                    t.cancel         
+                    MotionLightTimer.put(switchName, null)        
+                    ])
+                )
+            }
+
+        } else if (isDeepNight) {
+            if (MotionLightTimer.get(switchName) === null && Math::random < NIGHT_LIGHT_BLIP_PROBABILITY) {
+                var SwitchItem sw = ScriptServiceUtil.getItemRegistry.getItem(switchName) as SwitchItem
+                sw.sendCommand(ON)
+                if (Debug_Mode.state == ON) {
+                    logInfo("Autoscene", "Night light blip: " + switchName)
+                }
+                MotionLightTimer.put(switchName, createTimer(now.plusMinutes(NIGHT_LIGHT_BLIP_DURATION_MIN), [
+                    currItem.sendCommand(CLOSED)
+                    var SwitchItem tsw = ScriptServiceUtil.getItemRegistry.getItem(switchName) as SwitchItem
+                    tsw.sendCommand(OFF)
+                    var Timer t = MotionLightTimer.get(switchName)
+                    t.cancel
+                    MotionLightTimer.put(switchName, null)
+                    ])
+                )
+            }
+
+        } else {
+            // daytime gap - nobody's home, make sure it's off
+            val sw = ScriptServiceUtil.getItemRegistry.getItem(switchName)
+            if (sw.state == ON) sw.sendCommand(OFF)
+        }
+    ]
+end

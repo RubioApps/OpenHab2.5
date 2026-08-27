@@ -1,0 +1,504 @@
+/****************************************************************************************
+System:     OpenHAB version 2.5
+File:       alarm.rules
+Purpose:    Set the rules used of the Alarm System. Based RFLink 434,92MHz and SONOFF sensors/sirens
+Author :    Jaime Rubio 2023 (c)
+*****************************************************************************************/
+
+/* IMPORTANT NOTES:
+This rules use the commands formatted for RFLink https://rflink.nl
+You have to install a daemon that runs a python script to take the serial Tx/Rx 
+and format it to be sent to the MQTT server Mosquitto.
+More information here: https://github.com/Iture/RFLinkGateway
+*/
+
+import org.eclipse.smarthome.model.script.ScriptServiceUtil
+
+// Declare variables
+var String alarm_secret = ""
+var String alarm_code = ""
+var Integer alarm_length = 4
+var Integer alarm_tryouts = 0
+var Integer alarm_reset = 0
+var String alarm_email = ""
+var String alarm_sos = ""
+
+// WolfGuard Siren Alarm Codes (Outdoor)
+// Replace AAAAAA by your own siren code. 
+var String alarm_stay = "10;EV1527;AAAAAA;1;ON;"
+var String alarm_trigger = "10;EV1527;AAAAAA;4;ON;"
+var String alarm_disarmed = "10;EV1527;AAAAAAe;2;ON;"
+var String alarm_armed = "10;EV1527;AAAAAA;8;ON;"
+
+// OWSOO Siren Alarm Codes (Indoor)
+// Replace BBBBBB by your own siren code. 
+var String alarm2_stay = "10;EV1527;BBBBBB;1;ON;"
+var String alarm2_trigger = "10;EV1527;BBBBBB;2;ON;"
+var String alarm2_disarmed = "10;EV1527;BBBBBB;4;ON;"
+var String alarm2_armed = "10;EV1527;BBBBBB;8;ON;"
+
+var Timer BeepTimer = null
+var Integer BeepCounter = 0
+var Boolean OnProcess = false
+var Boolean OnCancel = false
+    
+// Default values
+rule "Set Default Values"
+when
+    System started
+then
+    Thread::sleep(5000) // let persistance finish restoring a few seconds         
+    gMotion.members.forEach[ i | i.postUpdate(CLOSED)]
+    gSensor.members.forEach[ i | i.postUpdate(OFF)]     
+end
+
+//************************************************************************************************
+// Motion Detection
+//************************************************************************************************
+rule "RFLink Motion Reception"
+when 
+	Member of gMotion changed from CLOSED to OPEN
+then   
+    var Boolean sensorEnabled = false
+    var msg = triggeringItem.label + "(" + triggeringItem.name + ")"
+    if (Debug_Mode.state == ON) { 
+        logInfo("Alarm" , msg + " motion detected as " + triggeringItem.state.toString)             
+    }
+
+    try{
+        // Point to the related motion switch
+        var GenericItem MotionSwitch = ScriptServiceUtil.getItemRegistry.getItem( triggeringItem.name + 'Switch') as GenericItem 
+        if (MotionSwitch.state == ON) sensorEnabled  = true
+    } catch(Exception e) {
+        logWarn("Alarm", "Could not read motion switch for " + triggeringItem.name + " - " + e.message)
+    } 
+
+    // trigger the alarm if any motion has been activated while the alarm is armed     
+    if(AL_LED.state == ON && sensorEnabled)
+    {                   
+        AL_Trigger.sendCommand(ON)           
+    }    
+
+    Thread::sleep(3000)        
+    triggeringItem.sendCommand(CLOSED)
+end
+
+//************************************************************************************************
+// Sensor Detection
+//************************************************************************************************
+rule "RFLink Sensor Reception"
+when 
+	Member of gSensor changed
+then   
+    var msg = triggeringItem.label		
+    if (Debug_Mode.state == ON) { 
+        logInfo("Alarm" , msg + " sensor detected as " + triggeringItem.state.toString)             
+    }
+
+    // trigger the alarm if any sensor has been activated 
+    if(triggeringItem.state == ON)
+    {                   
+        // FIX: the email/notification calls had no error handling. A missing or misconfigured
+        // email.txt/sensors.txt, or a mail server hiccup, would throw and abort this rule before
+        // ever resetting the sensor - now isolated so a notification failure can't also break the
+        // sensor state cleanup below.
+        try {
+            if (Debug_Mode.state == ON) {
+                logInfo("Alarm" , "Send email")
+            }
+            val alarm_email_addr = executeCommandLine("cat /etc/openhab2/rules/alarm/email.txt", 1000)             
+            val alarm_sensors_tpl = executeCommandLine("cat /etc/openhab2/rules/alarm/sensors.txt", 1000)            
+            val mailActions = getActions("mail","mail:smtp:mailer")
+            mailActions.sendMail(alarm_email_addr, "Alerte Capteurs" ,  String.format(alarm_sensors_tpl, triggeringItem.label)) 
+
+            if (Debug_Mode.state == ON) {
+                logInfo("Alarm" , "Send notification")  
+            }            
+            sendBroadcastNotification(triggeringItem.label)   
+        } catch (Exception e) {
+            logError("Alarm", "Could not send sensor alert for " + triggeringItem.label + " - " + e.message)
+        }
+
+        triggeringItem.postUpdate(OFF)      
+
+        // Notify
+        say("Warning: the sensor " + triggeringItem.label + " raised an error. Please check that everything is OK.")
+
+        // FIX: this 5s-sleep-then-reset-all used to run unconditionally on every gSensor change,
+        // including the very OFF resets it performs itself - so resetting the sensors re-triggered
+        // this rule again, adding another pointless 5-second delay and sweep each time. Moved
+        // inside the ON branch so it only runs once, right after a genuine trigger.
+        Thread::sleep(5000)
+        gSensor.members.forEach[ sensor | sensor.postUpdate(OFF)]
+    }    
+end
+
+//************************************************************************************************
+// Phone Detection
+//************************************************************************************************
+rule "Phone Detected"
+when 
+	Member of gPhones changed from OFF to ON
+then     
+    if (PhoneDetection.state == ON)
+    {
+        say("Hi " + triggeringItem.label + ". Your phone is now connected to the home network.");
+        Thread::sleep(2000)                      
+        if(AL_On.state == ON){
+            if (Debug_Mode.state == ON) {
+                logInfo("Alarm" , "Automatic disarm by phone presence")  
+            }        
+            AL_On.sendCommand(OFF)        
+        }
+    }
+end
+
+rule "Phone Not Detected"
+when 
+	Member of gPhones changed from ON to OFF
+then     
+    if (PhoneDetection.state == ON)
+    {             
+        if(gPhones.state == ON){
+            say(triggeringItem.label + " just left and his home is no longer connected to the home network.");        
+        } else { 
+            Thread::sleep(5000)          
+            say(triggeringItem.label + " just left and there is nobody else at home. The alarm is now armed automatically.");        
+            Thread::sleep(7000) 
+            AL_On.sendCommand(ON)             
+            if (Debug_Mode.state == ON) {
+                logInfo("Alarm" , "Automatic arm by missing phone presence")  
+            }             
+        }
+    }
+end
+
+/***********************************************************************************************
+Rules the alarm code
+************************************************************************************************
+To change the alarm code
+    1. Press '*'
+    2. Enter the CURRENT code
+    3. Press '#'
+    4. Enter the NEW code
+    5. Press '#'
+*/
+
+rule "Alarm Code"
+when
+	Item AL_Typed received update 
+then
+    val tc = AL_Typed.state.toString
+    if (Debug_Mode.state == ON) {
+        logInfo("Alarm", "Reset step" + alarm_reset.toString)
+    }
+    switch (tc)
+    {
+        // Reset code
+        case "*": {
+            if ( alarm_reset == 0)
+            {
+                if (Debug_Mode.state == ON) {
+                    logInfo("Alarm" , "Init Reset code") 
+                }
+                playSound("beep.mp3") 
+                say("Pleae enter the current PIN and type # to save.")            
+                alarm_reset = 1 
+            }                                
+        }
+
+        default: {
+            if (tc.length < alarm_length) {
+                say("PIN too short. Please retry")
+            } else {
+                try {
+                    alarm_code = tc.substring(0, alarm_length)  
+                    alarm_secret = executeCommandLine("cat /etc/openhab2/rules/alarm/secret.txt", 1000)             
+                    var Integer secretLen = if (alarm_secret.length < alarm_length) alarm_secret.length else alarm_length
+                    alarm_secret = alarm_secret.substring(0, secretLen)               
+
+                    //Check code to disarm   
+                    if ( alarm_reset == 0 )
+                    {	 
+                        // Disarm the alarm
+                        // FIX: SECURITY - the original condition was
+                        // "alarm_code == alarm_secret || BeepTimer !== null". That second clause
+                        // meant that while the alarm was in its arming countdown (BeepTimer
+                        // running), typing ANY code at all - right or wrong - would disarm/cancel
+                        // it, with no code check whatsoever during that window. Disarming now
+                        // always requires the correct code, whether or not a countdown is running.
+                        if (alarm_code == alarm_secret)
+                        {           
+                            OnCancel = true         
+                            AL_On.sendCommand(OFF)                                                                                               
+                        // Give up to 3 chances 
+                        } else {		
+                            if (Debug_Mode.state == ON) {
+                                logInfo("Alarm" , "Wrong Code")
+                            }
+                            alarm_tryouts = alarm_tryouts + 1
+                            // Notify
+                            if (alarm_tryouts > 2) {
+                                say("You reached the limit of try-outs. You have triggered the alarm.")                                  
+                                Thread::sleep(3000)
+                                AL_Trigger.sendCommand(ON)
+                            } else {                    
+                                say("The PIN you typed is wrong. You still have " + (3 - alarm_tryouts) + " try-outs.")
+                            }
+                        }                             
+                    }
+
+                    //Check code before saving a new one                
+                    if (alarm_reset == 1) {
+                        // wrong code
+                        if(alarm_secret != alarm_code)
+                        {                    
+                            alarm_tryouts = alarm_tryouts + 1
+
+                            // Notify
+                            if (Debug_Mode.state == ON) {
+                                logInfo("Alarm" , "Wrong code")
+                            }
+                            if (alarm_tryouts > 2) {
+                                say("You reached the limit of try-outs. You have triggered the alarm.")                                  
+                                Thread::sleep(3000)
+                                AL_Trigger.sendCommand(ON) 
+                            } else {                    
+                                say("The PIN you typed is wrong. You still have " + (3 - alarm_tryouts) + " try-outs.")
+                            }
+                        } else {
+                            if (Debug_Mode.state == ON) {
+                                logInfo("Alarm" , "Right code")
+                            }
+                            say("Please enter the new pin Veuillez saisir le nouveau code suivi de la touche #.")                  
+                            alarm_reset = 2
+                            alarm_tryouts = 0   
+                        }
+                    } else if (alarm_reset == 2) {
+                        if (Debug_Mode.state == ON) {
+                            logInfo("Alarm" , "Right code")
+                        }
+                        executeCommandLine("/etc/openhab2/rules/alarm/secret.sh " + alarm_code)                                                  
+                        alarm_secret = alarm_code.substring(0,alarm_length)         
+                        say("Your PIN is now updated.")
+                        alarm_tryouts = 0                  
+                        alarm_reset = 0                  
+                    }   
+                } catch (Exception e) {
+                    logError("Alarm", "Error while validating code - " + e.message)
+                    say("There was an error while verifying the typed PIN.")
+                }
+            }
+        }
+    }	
+end
+
+//***********************************************************************************************
+// Arm/Disarm the alarm based on the received type code
+//***********************************************************************************************
+
+rule "Arm/Disarm"
+when
+    Item AL_On received command
+then        
+
+    //if (Debug_Mode.state == ON) {
+        logInfo("Alarm", receivedCommand.toString)
+        logInfo("Alarm", "OnProcess: " + OnProcess.toString)
+        logInfo("Alarm", "OnCancel: " + OnCancel.toString)
+    //}    
+
+    //No process ongoing
+    if( ! OnProcess || OnCancel )
+    {           
+        //Reinit variables    
+        alarm_reset = 0
+        alarm_tryouts = 0      
+        BeepCounter   = 10   
+
+        // Start Process
+        OnProcess = true
+
+        // Disarm
+        if(receivedCommand == OFF || OnCancel) 
+        {     
+            // Cancel the beep            
+            if(BeepTimer !== null)
+            {
+                BeepTimer.cancel
+                BeepTimer = null
+            }
+
+            // Switch LED
+            AL_LED.postUpdate(OFF)                                                              
+            // Stop trigger
+            AL_Trigger.sendCommand(OFF)                    
+            // Stop cancel    
+            OnCancel = false              
+            // Stop process
+            OnProcess = false                
+
+            // Notice
+            playSound("beep.mp3")    
+            Thread::sleep(1000)         
+            say("The alarm is now disarmed")    
+        
+            // Disarm alarm  
+            val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")                                       
+            actionsBroker.publishMQTT( "rflink/cmd", alarm_disarmed)
+            actionsBroker.publishMQTT( "rflink/cmd", alarm2_disarmed)                                                                                                                                      
+        }
+
+        // Arm
+        if(receivedCommand == ON) 
+        {       
+            // Start process     
+            OnProcess = true 
+            // Stop cancel    
+            OnCancel = false               
+            // Switch off the motion sensor
+            gMotion.members.forEach[ i | i.postUpdate(CLOSED)]            
+
+            // Give user X seconds to get out and close door	        
+            say("The alarm will be armed in " + BeepCounter.toString + " seconds.")            
+            Thread::sleep(3000)  
+                
+            // Countdown
+            BeepTimer = createTimer( now.plusSeconds(1) , [ |                                  
+                BeepCounter = BeepCounter - 1
+                if(BeepCounter > 0 && OnProcess)
+                {                                               
+                    //playSound ("tone-1s.mp3")
+                    BeepTimer.reschedule(now.plusSeconds(1))         
+                } else {
+
+                    if(OnCancel == false)
+                    {                        
+                        // End process
+                        OnProcess = false                            
+
+                        // Abort timer
+                        BeepTimer.cancel
+                        BeepTimer = null    
+
+                        // Arm alarm    
+                        val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")                                                  
+                        actionsBroker.publishMQTT( "rflink/cmd", alarm_armed)
+                        actionsBroker.publishMQTT( "rflink/cmd", alarm2_armed)                      
+
+                        // Switch LED
+                        AL_LED.postUpdate(ON)                          
+                    }
+                }
+            ])                                                        
+        }   
+    } 
+
+end 
+
+//***********************************************************************************************
+// Trigger the alarm when demanded.
+// This uses IFTTT commands to receive the alert on the smartpohone
+//***********************************************************************************************
+
+rule "Alarm Triggered" 
+when 
+    Item AL_Trigger changed from OFF to ON
+then 
+    //If the alarm is armed, check the sensor behind the trigger and notify it
+    if(AL_LED.state == ON)
+    {
+        gMotion.members.forEach[ sensor | 
+            if(sensor.state == OPEN)
+            {
+                // FIX: wrapped - a missing email.txt/sos.txt or mail-server error used to throw
+                // and skip postUpdate(CLOSED) below, leaving the motion sensor stuck OPEN.
+                try {
+                    if (Debug_Mode.state == ON) {
+                        logInfo("Alarm" , "Send email")
+                    }
+                    val alarm_email_addr = executeCommandLine("cat /etc/openhab2/rules/alarm/email.txt", 1000)             
+                    val alarm_sos_tpl = executeCommandLine("cat /etc/openhab2/rules/alarm/sos.txt", 1000)            
+                    val mailActions = getActions("mail","mail:smtp:mailer")
+                    mailActions.sendMail(alarm_email_addr, "Alerte SOS" ,  String.format(alarm_sos_tpl, sensor.label)) 
+
+                    if (Debug_Mode.state == ON) {
+                        logInfo("Alarm" , "Send notification")  
+                    }            
+                    sendBroadcastNotification(sensor.label)   
+                } catch (Exception e) {
+                    logError("Alarm", "Could not send SOS alert for " + sensor.label + " - " + e.message)
+                }
+
+                // Set to OFF
+                sensor.postUpdate(CLOSED)
+            }    
+        ]
+    }
+    
+    // Trigger the alarm
+    if (Debug_Mode.state == ON) {
+        logInfo("Alarm" , "Trigger Alarm")
+    }
+    
+    val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")
+    actionsBroker.publishMQTT( "rflink/cmd", alarm_trigger) 
+    actionsBroker.publishMQTT( "rflink/cmd", alarm2_trigger)     
+
+    // Prevent the alarm is not running for more than 15 minutes
+    createTimer(now.plusMinutes(15), [ |           
+        if (Debug_Mode.state == ON) {
+            logInfo("Alarm" , "Automatic disarm")  
+        }
+        AL_On.sendCommand(OFF)
+    ])     
+    
+end 
+
+//***********************************************************************************************
+// Manages the code received from a keyfob
+//***********************************************************************************************
+
+rule "RFLink Keyfob Reception"
+when 
+	Member of gRFKey received update 	
+then 
+    // FIX: comment used to read "02=SOS ; 04=Disam ; 04=Arm" - Arm and Disarm both listed as "04",
+    // which contradicts the actual case statements below (08=Arm, 04=Disarm). Corrected to match.
+    // switches: 01=Silent alarm ; 02=SOS ; 04=Disarm ; 08=Arm
+    try {
+        alarm_email = executeCommandLine("cat /etc/openhab2/rules/alarm/email.txt", 1000)                
+        alarm_sos = executeCommandLine("cat /etc/openhab2/rules/alarm/sos.txt", 1000)      
+    } catch (Exception e) {
+        logError("Alarm", "Could not read email/sos templates - " + e.message)
+    }
+    
+	switch triggeringItem.state.toString
+	{    
+        // Silent alarm
+        case "01": {                    
+            try {
+                val mailActions = getActions("mail","mail:smtp:mailer")
+                mailActions.sendMail(alarm_email, "Alerte SOS" , alarm_sos)        
+            } catch (Exception e) {
+                logError("Alarm", "Could not send silent alarm email - " + e.message)
+            }
+        }   
+        // SOS Button  
+        case "02": {
+            AL_Trigger.sendCommand(ON)                                            
+        }                 
+        // Arm 
+		case "08": {
+			AL_On.sendCommand(ON)			
+			}  
+        // Disarm
+		case "04": {  
+            if ( ! OnCancel ) {
+                OnCancel = true
+                AL_On.sendCommand(OFF)                       		
+			}        
+        }
+	}
+  
+end

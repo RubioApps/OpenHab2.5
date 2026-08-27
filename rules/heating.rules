@@ -1,0 +1,1124 @@
+/****************************************************************************************
+System:     OpenHAB version 2.5
+File:       heating.rules
+Purpose:    Heating Automation Rules based on the specs https://www.zigbee2mqtt.io/devices/TS0601_thermostat.html
+Author :    Jaime Rubio 2023 (c)
+*****************************************************************************************/
+
+import org.eclipse.smarthome.model.script.ScriptServiceUtil
+import org.eclipse.xtext.xbase.lib.Functions
+import org.eclipse.xtext.xbase.lib.Procedures
+import java.lang.Math
+
+// Global variables
+// ------------------------------------------------------------------------
+// Minimum difference between the measured temperature at the room and the setpoint for that room, in °C
+val Float SETPOINT_THRESHOLD = 0.5f
+// Maximum difference between the local temperature measured at the valve and the one at the room, in °C
+val Float CALIB_THRESHOLD = 0.5f
+// To detect an open window, Cooling step, in °C/min
+val Float COOLING_STEP = 0.2f
+// Period to check while detecting any open window, in Minutes
+val Integer DETECTION_PERIOD = 5
+// ------------------------------------------------------------------------
+var Boolean AnyHeats = false
+var Boolean AnyMode = false
+var Timer ModeBoostTimer = null
+var Timer BoilerChangeTimer = null
+var String LastRegMode = null
+// ------------------------------------------------------------------------
+
+
+val Functions$Function1<String , Boolean> isSmartValve = [
+    name |    
+    val heater = ScriptServiceUtil.getItemRegistry.getItem(name) as GenericItem  
+    return heater.label !== null && heater.label.length >= 4 && heater.label.substring(0,4) == "srv_"
+]
+
+val Functions$Function1<String , Float> zoneOffset = [
+    zone |    
+    switch(zone) {
+        case "Z1": return 1f    // Bathrooms
+        case "Z2": return 0f    // Ground floor (reference)
+        case "Z3": return -1f   // First floor (reference)
+        case "Z4": return -3f   // Basement
+        default: return 0f
+    }
+]
+
+val Procedures$Procedure1<Float> applyZoneSetpoints = [ Float baseTemp |
+  if (baseTemp !== null){
+    MainSetpoint_Z1.postUpdate(baseTemp + zoneOffset.apply("Z1"))
+    MainSetpoint_Z2.postUpdate(baseTemp + zoneOffset.apply("Z2"))
+    MainSetpoint_Z3.postUpdate(baseTemp + zoneOffset.apply("Z3"))
+    MainSetpoint_Z4.postUpdate(baseTemp + zoneOffset.apply("Z4"))
+  }
+]
+
+rule "Set Default Values"
+when
+    System started
+then    
+  Heating_Calibrate.sendCommand(OFF)
+  //Disable Zone 4 (basement) and Zone 5 (attic) : no heaters so far
+  gHeater_Z4.postUpdate(OFF)
+  gHeater_Z5.postUpdate(OFF)
+
+  //Trace the last time we toggled the boiler
+  Heating_LastChange.postUpdate(now.millis)
+
+  //Recover last regulation mode
+  LastRegMode = Heating_Mode.state.toString
+
+  //Reset the timers
+  try{
+    if(ModeBoostTimer !== null){
+      ModeBoostTimer.cancel
+      ModeBoostTimer = null
+    }        
+    if(BoilerChangeTimer !== null){
+      BoilerChangeTimer.cancel
+      BoilerChangeTimer = null
+    }       
+  } catch(Exception e){
+    logError("Heating Started",e.getMessage())
+  }
+   
+ end
+
+//*************************************************************************************************************
+// Initialize the radiators
+//*************************************************************************************************************
+
+rule "Initialize radiators"
+when
+    Item Heating_Init changed to ON
+then 
+  Heating_BoostTime.postUpdate(3600)
+  Heating_DaysAway.postUpdate(30)
+  gHeater.members.filter[s | isSmartValve.apply(s.name)].forEach [ currHeater |    
+
+      //Get the reference setpoints for Comfort/Eco/Away      
+      var float temp_comfort = Float.valueOf(Setpoint_Comfort.state.toString.split(' ').get(0))
+      var float temp_eco = Float.valueOf(Setpoint_Eco.state.toString.split(' ').get(0))
+      var float temp_away = Float.valueOf(Setpoint_Away.state.toString.split(' ').get(0))
+
+      val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")     
+      actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/comfort_temperature" , temp_comfort.intValue.toString, true)
+      actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/eco_temperature" , temp_eco.intValue.toString, true)
+      actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/away_preset_temperature" , temp_away.intValue.toString, true)
+      actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/week", "7", true) 
+      actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/valve_detection", "OFF", true)
+      actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/max_temperature", "25", true) 
+      actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/min_temperature", "5", true)  
+      actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/auto_lock", "true", true)  
+      actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/local_temperature_calibration", "0", true)  
+      Thread::sleep(500)      
+  ]
+  Heating_Init.sendCommand(OFF)
+end 
+
+//*************************************************************************************************************
+// Detect an open window based on the negative slope of the room temperature during a given timeslot
+// For the Smart Valves, this is done through the parameter window_detection and window_detection_params, where
+// - minutes: The duration (in minutes) for which the window must remain open before the device considers it as “open”.
+// - temperature: The temperature threshold (in °C) above which the device considers the window as “open”.
+//*************************************************************************************************************
+
+rule "Detect an Open Window"
+when 
+  Member of gTemperature changed
+then            
+    var GroupItem currGroup = ScriptServiceUtil.getItemRegistry.getItem( triggeringItem.name ) as GroupItem                            
+    currGroup.members.forEach[ currZone |    
+      var String room = currZone.groupNames.get(0)
+      var Integer zone = Integer::parseInt(currZone.groupNames.get(1).split('_Z').get(1))            
+
+      //Check the temperature slope, excluding the basement (zone=4) and the attic (zone=5)
+      if(zone <=3){      
+        var Boolean zoneWindowOpen = false
+
+        try {
+          var GenericItem currHeater = ScriptServiceUtil.getItemRegistry.getItem( room + '_Heating') as GenericItem  
+          var GenericItem currSensor = ScriptServiceUtil.getItemRegistry.getItem( room + '_Temperature') as GenericItem          
+          var GenericItem currWindow = ScriptServiceUtil.getItemRegistry.getItem( room + '_WindowOpen') as GenericItem
+
+          var String url = "http://localhost:8080/rest/persistence/items/" +  currSensor.name
+          var String dataJson = sendHttpGetRequest(url)
+
+          var Float currTemp = Float.parseFloat(currSensor.state.toString.split(" ").get(0))
+          var Integer count = Integer::parseInt(transform("JSONPATH", "$.datapoints", dataJson ))	
+
+          //Current tick (now in seconds)
+          var Float tick = Float.parseFloat( now.millis.toString)/1000 
+          // Tick X minutes ago
+          var Float limit = tick - (DETECTION_PERIOD * 60)
+          var Float temp = 0f
+
+          //Any fall of temperature higher than {coolingstep} * {period} during the last {period} minutes?
+          for (var Integer i = 0; i < count ; i++)
+          {
+            tick = Float.parseFloat(transform("JSONPATH", "$.data[" + i + "].time", dataJson))/1000
+            temp = Float.parseFloat(transform("JSONPATH", "$.data[" + i + "].state", dataJson))      
+
+            //If the tick is after the limit and the gap between now and X minutes ago is higher that the given cooling step
+            if(tick >= limit && (temp - currTemp) > (COOLING_STEP * DETECTION_PERIOD)){              
+              currHeater.sendCommand(OFF)
+              currWindow.sendCommand(OPEN)
+              zoneWindowOpen = true              
+              if(Debug_Mode.state == ON){
+
+                logInfo("Window Detection", room + " has an open window. It passed from " + temp.toString + "°C to " + currTemp.toString + "°C in " + DETECTION_PERIOD.toString + " minutes")               
+              }
+            }
+          }
+
+          //Set the window state      
+          if(!zoneWindowOpen){ 
+            currWindow.sendCommand(CLOSED)
+            if(Debug_Mode.state == ON){
+              logInfo("Window Detection", room + " window is closed")               
+            }
+          }
+        } catch (Exception e) {
+          logWarn("Window Detection", "Could not evaluate " + room + " - " + e.message)
+        }
+      }
+    ]    
+end 
+
+//*************************************************************************************************************
+// Calibrate the local temperature of the heaters, compared to the room temperature provided by other sensors
+//*************************************************************************************************************
+
+rule "Calibrate radiators"
+when
+    Item Heating_Calibrate changed to ON
+then    
+  gHeater.members.filter[s | isSmartValve.apply(s.name)].forEach [ currHeater |                
+      try{
+        var String room = currHeater.groupNames.get(0)      
+        var GenericItem currOffset = ScriptServiceUtil.getItemRegistry.getItem( room + '_Offset') as GenericItem          
+        var GenericItem srvItem = ScriptServiceUtil.getItemRegistry.getItem( room + '_LocalTemp') as GenericItem  
+        var GenericItem thpItem = ScriptServiceUtil.getItemRegistry.getItem( room + '_Temperature') as GenericItem                    
+      
+        var float offset = Float.valueOf(currOffset.state.toString.split(' ').get(0))
+        var float localTemp = Float.valueOf(srvItem.state.toString.split(' ').get(0))
+        var float roomTemp = Float.valueOf(thpItem.state.toString.split(' ').get(0))                
+
+        //Original local temp before applying the offset
+        localTemp = localTemp - offset
+
+        //Which diff?
+        var float diff = roomTemp - localTemp           
+
+        //Round to half
+        var float v = Float.valueOf(diff.intValue.toString) 
+        if (Math.abs(diff - v) < 0.25) {
+          diff = v
+        } else if (Math.abs(diff - v) < 0.75) {
+          diff = v + Float.valueOf(Math.signum(diff)/2)
+        } else {
+          diff = v + Float.valueOf(Math.signum(diff))
+        }    
+
+        //Limit the next offset to the given range [-6,6]
+        if (diff > 8) diff = 8
+        if (diff < -8) diff = -8
+
+        //Run changes only if not in Off mode, there is a change of offset and it is greater than CALIB_THRESHOLD in °C
+        if(Heating_Off.state == OFF && diff != offset && Math.abs(diff - offset) > CALIB_THRESHOLD){                     
+            if (Debug_Mode.state == ON) {
+              logInfo("Calibration","Temperature at Heater " + room + ":" + srvItem.state.toString)
+              logInfo("Calibration","Temperature at Room " + room + ":" + thpItem.state.toString)           
+              logInfo("Calibration","Calibrate " + room + " offset to " + String.valueOf(diff))        
+            }
+            currOffset.postUpdate(diff)
+            val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")  
+            actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/system_mode", "auto", true)  
+            Thread::sleep(100)   
+            actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/local_temperature_calibration", String.valueOf(diff),true)            
+            Thread::sleep(100)                      
+            actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/preset", Heating_Mode.state.toString , true )              
+            Thread::sleep(100)            
+        } 
+      } catch(Exception e){
+           logError("Heating calibration",e.getMessage())
+      }
+  ]
+
+  Heating_Calibrate.sendCommand(OFF)      
+end 
+
+//*************************************************************************************************************
+// Boost Time setting
+//*************************************************************************************************************
+
+rule "Boost time change"
+when
+    Item Heating_BoostTime changed
+then 
+  // NOTE: this loop uses Thread::sleep(1000) per heater, sequentially, on the shared rule-engine
+  // thread pool. With N smart valves that blocks a worker thread for N seconds. Fine for a handful
+  // of heaters; if the valve count grows a lot, consider a small delay between MQTT publishes
+  // instead of a full second, or fire the publishes without blocking and rely on retained/QoS delivery.
+  gHeater.members.filter[s | isSmartValve.apply(s.name)].forEach [ currHeater |      
+      var float v = 60 * Float.valueOf(Heating_BoostTime.state.toString)
+      val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")   
+      actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/boost_time", String.valueOf(v),true)
+      Thread::sleep(1000)
+  ]
+end 
+
+//*************************************************************************************************************
+// Days Aways setting
+//*************************************************************************************************************
+
+rule "Days Away change"
+when
+    Item Heating_DaysAway changed
+then 
+  gHeater.members.filter[ s | isSmartValve.apply(s.name)].forEach [ currHeater |      
+      val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")   
+      actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/away_preset_days", Heating_DaysAway.state.toString,true)
+      Thread::sleep(1000)
+  ]
+end 
+
+rule "Child lock"
+when
+    Item Heating_ChildLock changed
+then 
+  gHeater.members.filter[s | isSmartValve.apply(s.name)].forEach [ currHeater |      
+    val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")    
+    if(Heating_ChildLock.state == ON){
+      actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/child_lock","LOCK",true)
+    } else {
+      actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/child_lock","UNLOCK",true)
+    }
+    Thread::sleep(1000)
+  ]
+end 
+
+//*************************************************************************************************************
+// Toogle Valve detection
+//*************************************************************************************************************
+
+rule "Valve detection"
+when
+    Item ValveDetection received command
+then 
+  gHeater.members.filter[s | isSmartValve.apply(s.name)].forEach [ currHeater |      
+    val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")   
+    actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/valve_detection", receivedCommand.toString,true)
+    Thread::sleep(100)
+  ]
+end 
+
+//*************************************************************************************************************
+// Toogle Auto Lock
+//*************************************************************************************************************
+
+rule "Auto Lock"
+when
+    Item Heating_AutoLock received command
+then 
+  gHeater.members.filter[s | isSmartValve.apply(s.name)].forEach [ currHeater |      
+    val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")   
+    if(receivedCommand == ON){
+      actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/auto_lock", "AUTO" ,true)    
+    } else {
+      actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/auto_lock", "MANUAL" ,true)    
+    }
+    Thread::sleep(1000)
+  ]
+end 
+
+//*************************************************************************************************************
+// Dispatch the change of schedules on the Smart Radiator Valves
+//*************************************************************************************************************
+
+rule "Send the new schedule to the Smart valves"
+when 
+    Time cron "0 0 5 ? * * *" or                    // Every day at 5:00AM review the plan for the day    
+    Item Setpoint_Comfort received update or        // Any change of Comfort setpoint
+    Item Setpoint_Eco received update or            // Any change of Eco setpoint
+    Item Setpoint_Loss received update or           // Any change of Loss setpoint
+    Item TransferItem1 received update or           // Any change in the timeslots    
+    Item Heating_Schedule changed from OFF to ON    // If the Scheduled mode has been selected
+then 
+    gHeater.members.filter[s | isSmartValve.apply(s.name)].forEach [ currHeater |  
+      
+      var String room = currHeater.groupNames.get(0)
+      var GenericItem currSetpoint = ScriptServiceUtil.getItemRegistry.getItem( room + '_Setpoint') as GenericItem            
+      var String zone = currSetpoint.groupNames.get(1).split('_').get(1)
+
+      var float maxTemp = Float.valueOf(Setpoint_Comfort.state.toString.split(' ').get(0))  
+
+      //Fix the setpoint depending on the zone
+      maxTemp = maxTemp + zoneOffset.apply(zone)
+
+      //Set the minimum temperature depending of the maximum loss (params)
+      var float difTemp = Float.valueOf(Setpoint_Loss.state.toString.split(' ').get(0))    
+      var float minTemp = maxTemp - difTemp  
+
+      //Define the variables      
+      var Integer counter = 0     
+      var Integer changes = 0
+      var Integer hour = 0
+      var Integer minutes = 0     
+      var Integer currDay = now.getDayOfWeek()           
+      var String currSwitchPlan = TransferItem1.state.toString                           
+      var String dailyPlan =  (transform("JSONPATH", "$." + currDay + ".value", currSwitchPlan)).replaceAll("[ ]","")
+      var Integer prevState = 0    
+      var String output = ""        
+
+      if (dailyPlan !== null){
+        var String[] switchStates  = dailyPlan.substring(1 , dailyPlan.length-2).split(',')
+        while (counter < switchStates.size()-1)
+        {               
+          if (Integer::parseInt(switchStates.get(counter)) == 1)
+          {                
+            if (prevState == 0)
+            {
+              if (output.length>0) output = output + ","
+              output = output + "{\"hour\":" + hour.toString + ",\"minute\":" + minutes.toString + ",\"temperature\":" + maxTemp.intValue.toString + "}"
+              changes = changes + 1
+            }
+          } else {
+            if (prevState == 1)
+            {
+              if (output.length>0) output = output + ","
+              output = output + "{\"hour\":" + hour.toString + ",\"minute\":" + minutes.toString + ",\"temperature\":" + minTemp.intValue.toString + "}"
+              changes = changes + 1
+            }
+          }         
+
+          prevState = Integer::parseInt(switchStates.get(counter))  
+          minutes = minutes + 15 
+          if (minutes > 59) {
+            minutes = 0
+            hour = hour + 1
+            if (hour > 23) hour = 0            
+          }
+          counter = counter + 1
+        } 
+      }
+
+      // Smart valves need 6 changes within the same date. Fulfill the remaining changes
+      if(changes < 6){
+        while( changes < 6){
+          if (output.length>0) output = output + ","
+          output = output + "{\"hour\":" + hour.toString + ",\"minute\":" + minutes.toString + ",\"temperature\":" + minTemp.intValue.toString + "}"
+          changes = changes + 1
+        }
+      }
+
+      //Update schedules for Zigbee Smart Radiator Valves (SRV)            
+      try
+      {
+        val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto") 
+
+        // Workdays in 7-days mode
+        actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/schedule", "{\"workdays\":[" + output + "]}" , true)
+        Thread::sleep(300)        
+
+        // For the week-end, set the holidays as well. This will not be used if 7-days week is selected        
+        if(currDay >= 6)
+        {          
+          actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/schedule", "{\"holidays\":[" + output + "]}" , true)
+          Thread::sleep(300)
+        }        
+
+      } catch(Exception e) {
+          logError("Heating Schedule", e.getMessage())
+      }                
+    ]  
+
+    // Update the stae machine
+    Heating_Toogle.sendCommand(ON)
+end 
+
+//*************************************************************************************************************
+// Set the heating state of each radiator
+//*************************************************************************************************************
+
+rule "State Machine"
+when
+    Item Heating_Toogle changed from OFF to ON or   // If some function can trigger a change of the Boiler state
+    Item Heating_Timer changed or                   // If the timer as changed (time to heat or not )
+    Member of gTemperature changed                  // If any measured temperature has changed
+then         
+
+    if(Debug_Mode.state == ON){
+      logInfo("State Machine","Triggered by " + triggeringItem.name)  
+    }
+
+    gHeater.members.forEach[ currHeater |   
+
+      // Get the temperature, setpoint and position for the current heater
+      var String room = currHeater.groupNames.get(0)
+      var GenericItem currTemperature = ScriptServiceUtil.getItemRegistry.getItem( room + '_Temperature') as GenericItem
+      var GenericItem currSetpoint    = ScriptServiceUtil.getItemRegistry.getItem( room + '_Setpoint') as GenericItem      
+      var GenericItem currPosition    = ScriptServiceUtil.getItemRegistry.getItem( room + '_Position') as GenericItem      
+      var GenericItem currPreset      = ScriptServiceUtil.getItemRegistry.getItem( room + '_Preset') as GenericItem      
+      var GenericItem currIgnored     = ScriptServiceUtil.getItemRegistry.getItem( room + '_Ignored') as GenericItem      
+
+      // Get the zone and the zone setpoint
+      var String zone = currSetpoint.groupNames.get(1).split('_').get(1)
+      var GenericItem currZoneSetpoint = ScriptServiceUtil.getItemRegistry.getItem( 'MainSetpoint_' + zone) as GenericItem                  
+
+      // Init the range of temperatures
+      var float maxTemp = 21
+      var float minTemp = 18
+      var float difTemp = 3     
+
+      //For Smart valves
+      if (isSmartValve.apply(currHeater.name))
+      {
+        //Check if the current preset matches the general preset mode and fix it if different
+        if(currPreset.state.toString != Heating_Mode.state.toString)
+        {
+          val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")  
+          if(Heating_Off.state == ON)
+	        {
+	          if(currPreset.state.toString != "complex")
+	          {
+              actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/system_mode", "off", true)         
+              Thread::sleep(100)          
+              actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/preset", "complex" , true ) 
+	          }
+          } else {
+            actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/system_mode", "auto", true)  
+            Thread::sleep(100)          
+            actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/preset", Heating_Mode.state.toString , true )  
+          }
+        }
+      } 
+
+      // Only for manual valves
+      else {
+
+        // Not scheduled mode
+        if(Heating_Schedule.state == OFF) 
+        { 
+          if(Heating_Comfort.state == ON){
+            maxTemp = Float.valueOf(Setpoint_Comfort.state.toString.split(' ').get(0))                       
+          }          
+          if(Heating_Eco.state == ON){
+            maxTemp = Float.valueOf(Setpoint_Eco.state.toString.split(' ').get(0))
+          }
+          if(Heating_Manual.state == ON){
+            //Take the temperature of the Zone
+            maxTemp = Float.valueOf(currZoneSetpoint.state.toString.split(' ').get(0))
+          }                        
+          if(Heating_Away.state == ON){
+            maxTemp = Float.valueOf(Setpoint_Away.state.toString.split(' ').get(0))
+          }
+          if(Heating_Boost.state == ON){
+            maxTemp = Float.valueOf(25)
+          } 
+          if(Heating_Off.state == ON){
+            maxTemp = Float.valueOf(5)
+          }               
+
+          if(Heating_Comfort.state == ON || Heating_Eco.state == ON)
+          {
+            //Fix the setpoint depending on the zone
+            maxTemp = maxTemp + zoneOffset.apply(zone)
+          }                 
+          //Send setpoint
+          currSetpoint.postUpdate(maxTemp);
+        }  
+        // Auto mode (Schedule): Use the comfort setpoint 
+        else
+        {    
+            maxTemp = Float.valueOf(Setpoint_Comfort.state.toString.split(' ').get(0)) 
+            //Fix the setpoint depending on the zone
+            maxTemp = maxTemp + zoneOffset.apply(zone)
+
+            difTemp = Float.valueOf(Setpoint_Loss.state.toString.split(' ').get(0)) 
+            minTemp = maxTemp - difTemp 
+
+            if (Heating_Timer.state == ON){
+              currSetpoint.postUpdate(maxTemp);
+            } else {
+              currSetpoint.postUpdate(minTemp);
+            }
+        } 
+      }      
+
+      //Prepare the heating state ON/OFF for each valve
+      var Boolean mustheat = false     
+
+      try {
+        // Compare the current temperature to the current setpoint          
+        var float v1 = Float.valueOf(currTemperature.state.toString.split(' ').get(0))
+        var float v2 = Float.valueOf(currSetpoint.state.toString.split(' ').get(0))
+
+        // Now the setpoints match the heating mode, compare both values
+        // This works for Auto / Comfort / Eco / Manual / Away
+        if ((v1 < v2 - SETPOINT_THRESHOLD) && currIgnored.state != ON)
+        {
+          mustheat = true
+        } else {
+          mustheat = false
+        } 
+
+        //For Mode off, ensure the heater is off, whatever happens
+        if(Heating_Off.state == ON) mustheat = false
+
+        //For Mode boost, ensure the heater is on, whatever happens
+        if(Heating_Boost.state == ON) mustheat = true
+
+        //Do not heat if any window is open
+        if(gWindow.state !== CLOSED) mustheat = false      
+
+        //If after the all the checks (timer and temperature), the heater has to run, then put the Heater switch to ON
+        if(mustheat){
+          currHeater.sendCommand(ON)        
+        //Otherwise, set it OFF
+        } else {
+          currHeater.sendCommand(OFF)        
+        }
+
+        // For manual valves, set the position (only for UI purposes)
+        var Integer newPos = 0      
+        if (!isSmartValve.apply(currHeater.name)) { 
+          if(v1 <= v2 - 1){
+            newPos = 100
+          } else if(v1 >= v2) {
+            newPos = 0
+          } else {
+            newPos = (100 *((v2 - v1) / 1)).intValue
+          }
+          
+          if(currIgnored.state == ON) newPos = 0
+          if(Heating_Boost.state == ON) newPos = 100        
+          if(Heating_Off.state == ON) newPos = 0        
+
+          if(Debug_Mode.state == ON){
+            logInfo("Heating State Machine" , currHeater.name + " ratio: " + v1.toString + "/" + v2.toString + ". New position: " + newPos.toString);
+          }
+          currPosition.postUpdate(newPos)
+        }
+      } catch (Exception e) {
+        logWarn("Heating State Machine", "Skipped " + room + " - could not read temperature/setpoint: " + e.message)
+      }
+    ]      
+    Heating_Toogle.sendCommand(OFF)  
+    Heating_Calibrate.sendCommand(ON)    
+end
+
+//*************************************************************************************************************
+// Switch the Boiler off if any window is open
+//*************************************************************************************************************
+rule "Detect an open window"
+when 
+  Member of gWindow changed to OPEN
+then   
+  if(B_Boiler_Switch.state == ON){
+    var String room = triggeringItem.groupNames.get(0)    
+    var GenericItem currRoom = ScriptServiceUtil.getItemRegistry.getItem( room ) as GenericItem
+    say("Il y a une fenêtre ouverte dans: " + currRoom.label + ". Le chauffage sera donc interrompu pendant quelques minutes. S'il te plaît, n'oublies pas de la fermer.")              
+    Heating_Switch.sendCommand(OFF)  
+  }
+end
+
+//*************************************************************************************************************
+// Switch the Boiler ON/OFF accordingly to the state of all heaters
+//*************************************************************************************************************
+rule "Switch the boiler"
+when 
+  Member of gHeater received command
+then   
+  AnyHeats = false
+  try{
+    gHeater.members.forEach [ currHeater | 
+      if (currHeater.state == ON) {
+        AnyHeats = true 
+      }
+    ]
+  } catch(Exception e){
+    logError("Boiler Switch", e.getMessage())
+  }
+
+  //Avoid any heating if the system is off
+  if(Heating_Off.state == ON || gWindow.state == OPEN) AnyHeats=false
+
+  //Force all heating if the system is boost
+  if(Heating_Boost.state == ON) AnyHeats=true
+
+  //Avoid any heating if there is any window open
+  if(gWindow.state != CLOSED) AnyHeats=false  
+
+  val desiredBoilerOn = AnyHeats
+  val boilerCurrentlyOn = (B_Boiler_Switch.state == ON)
+
+  if (desiredBoilerOn != boilerCurrentlyOn) {
+    if (BoilerChangeTimer !== null) {
+      BoilerChangeTimer.cancel
+      BoilerChangeTimer = null
+    }
+    BoilerChangeTimer = createTimer( now.plusSeconds(5) , [ |             
+      BoilerChangeTimer.cancel
+      BoilerChangeTimer = null
+      Heating_Switch.sendCommand(if (desiredBoilerOn) ON else OFF)               
+    ])
+  } else if (BoilerChangeTimer !== null) {
+    // Desired state now matches the current boiler state again - drop the now-unneeded pending change
+    BoilerChangeTimer.cancel
+    BoilerChangeTimer = null
+  }
+end 
+
+//****************************************************************************************************
+// Start/Stop the boiler depending on the General Heating State
+//****************************************************************************************************
+rule "Start & Stop the Boiler"
+when 
+  Item Heating_Switch received command
+then 
+  if(B_Boiler_Switch.state != gHeater.state)
+  {
+    if (Debug_Mode.state == ON) {
+      logInfo("Boiler switch" , "Boiler switched to " + gHeater.state.toString )
+    }
+    Heating_LastChange.postUpdate(now.millis)
+    B_Boiler_Switch.sendCommand (gHeater.state.toString)
+  }
+
+end 
+
+//****************************************************************************************************
+// Scheduled Mode
+//****************************************************************************************************
+rule "Scheduled Mode"
+when 
+  Item Heating_Schedule changed to ON
+then 
+  if (Debug_Mode.state == ON) {
+    logInfo("Heating Mode","Mode changed to Schedule")      
+  }
+
+  //Update the heating mode
+  Heating_Mode.postUpdate("schedule")  
+
+  //Ensure the other modes are disabled
+  gRegModes.members.forEach [ s | if (s != triggeringItem ){ s.sendCommand(OFF) } ]  
+
+  //Set the zone setpoints accordingly
+  try{
+    var float v = Float.valueOf(Setpoint_Comfort.state.toString.split(' ').get(0))
+    applyZoneSetpoints.apply(v)
+  } catch (Exception e){
+    logError("Scheduled Mode",e.getMessage())
+  }
+
+  // Update the state machine
+  Heating_Toogle.sendCommand(ON)
+
+end
+
+
+//****************************************************************************************************
+// Comfort Mode
+//****************************************************************************************************
+rule "Comfort Mode"
+when 
+  Item Heating_Comfort changed to ON
+then 
+  if (Debug_Mode.state == ON) {
+    logInfo("Heating Mode","Mode changed to Comfort")      
+  }
+
+  //Update the heating mode
+  Heating_Mode.postUpdate("comfort")  
+
+  //Ensure the other modes are disabled
+  gRegModes.members.forEach [ s | if (s != triggeringItem ){ s.sendCommand(OFF) } ]  
+
+  //Set the zone setpoints accordingly
+  var float v = Float.valueOf(Setpoint_Comfort.state.toString.split(' ').get(0))
+  applyZoneSetpoints.apply(v)
+
+  // Update the state machine
+  Heating_Toogle.sendCommand(ON)
+
+end
+
+//****************************************************************************************************
+// ECO Mode
+//****************************************************************************************************
+rule "Eco Mode"
+when 
+  Item Heating_Eco changed to ON
+then 
+  if (Debug_Mode.state == ON) {
+    logInfo("Heating Mode","Mode changed to Eco")       
+  }
+
+  //Update the heating mode
+  Heating_Mode.postUpdate("eco")
+
+  //Ensure the other modes are disabled
+  gRegModes.members.forEach [ s | if (s != triggeringItem ){ s.sendCommand(OFF) } ]  
+
+  //Set the zone setpoints accordingly
+  var float v = Float.valueOf(Setpoint_Eco.state.toString.split(' ').get(0))
+  applyZoneSetpoints.apply(v)
+
+  // Update the state machine
+  Heating_Toogle.sendCommand(ON)
+
+end
+
+//****************************************************************************************************
+// Boost Mode
+//****************************************************************************************************
+rule "Boost Mode"
+when 
+  Item Heating_Boost changed to ON
+then   
+  if (Debug_Mode.state == ON) {
+    logInfo("Heating Mode","Mode changed to Boost")       
+  }
+
+  //Update the heating mode
+  Heating_Mode.postUpdate("boost")  
+
+  //Switch on all the heaters in the system. The boiler will be switched on
+  gHeater.members.forEach [ s | s.sendCommand(ON) ]
+
+  //The boost mode cannot be run for longer that Heating_BoostTime minutes
+  //This will avoid to forget it. After that period, the system will be back to Comfort Mode automatically
+
+  try{
+    //Reset timer
+    if(ModeBoostTimer !== null){
+      ModeBoostTimer.cancel
+      ModeBoostTimer = null
+      }
+
+    //Create a new timer
+    val lapse = Integer::parseInt(Heating_BoostTime.state.toString)
+    ModeBoostTimer = createTimer(now.plusMinutes(lapse), [|             
+      Heating_Schedule.sendCommand(ON)    
+      ])
+
+  } catch(Exception e){
+    logError("Boost Mode", e.getMessage())
+  }   
+
+  //Ensure the other modes are disabled
+  gRegModes.members.forEach [ s | if (s != triggeringItem ){ s.sendCommand(OFF) } ]               
+
+  //Set the zone setpoints accordingly
+  gMainSetpoints.members.forEach [ zone | zone.postUpdate(25)]
+
+  //Force the boiler
+  Heating_LastChange.postUpdate(now.millis)
+  Heating_Switch.sendCommand(ON)
+  
+end
+
+//****************************************************************************************************
+// Away Mode
+//****************************************************************************************************
+rule "Away Mode"
+when 
+  Item Heating_Away changed to ON
+then     
+  if (Debug_Mode.state == ON) {
+    logInfo("Heating Mode","Mode changed to Away")         
+  } 
+
+  Heating_Mode.postUpdate("away")  
+  Heating_FirstDayAway.postUpdate(now.toString)
+
+  //Ensure the other modes are disabled
+  gRegModes.members.forEach [ s | if (s != triggeringItem ){ s.sendCommand(OFF) } ]    
+
+  //Set the zone setpoints accordingly
+  gMainSetpoints.members.forEach [ zone | 
+    var float v = Float.valueOf(Setpoint_Away.state.toString.split(' ').get(0))
+    zone.postUpdate(v)
+  ]
+
+  // Update the state machine
+  Heating_Toogle.sendCommand(ON)
+
+end
+
+//****************************************************************************************************
+// Manual Mode
+//****************************************************************************************************
+rule "Manual Mode"
+when
+  Item Heating_Manual changed to ON
+then
+  if (Debug_Mode.state == ON) {
+    logInfo("Heating Mode","Mode changed to Manual")        
+  }
+
+  //Update the heating mode
+  Heating_Mode.postUpdate("manual")    
+
+  //Ensure the other modes are disabled
+  gRegModes.members.forEach [ s | if (s != triggeringItem ){ s.sendCommand(OFF) } ]  
+
+  // Set the zone setpoints accordingly: Start as comfort mode
+  var float v = Float.valueOf(Setpoint_Comfort.state.toString.split(' ').get(0))
+  applyZoneSetpoints.apply(v)
+
+  // Update the state machine
+  Heating_Toogle.sendCommand(ON)  
+
+end 
+
+//****************************************************************************************************
+// Mode Off
+//****************************************************************************************************
+rule "Mode Off"
+when 
+  Item Heating_Off changed to ON
+then         
+  if (Debug_Mode.state == ON) {    
+    logInfo("Heating Mode","Mode changed to Off")   
+  }
+
+  //Update the heating mode
+  Heating_Mode.postUpdate("off")
+
+  //Ensure the other modes are disabled
+  gRegModes.members.forEach [ s | if (s != triggeringItem ){ s.sendCommand(OFF) } ]   
+
+  //Set the zone setpoints accordingly
+  gMainSetpoints.members.forEach [ zone | zone.postUpdate(5)]
+
+  //Switch off all the heaters in the system. The boiler will be switched off 
+  gHeater.members.forEach [ s | s.sendCommand(OFF) ]
+
+  // Update the state machine
+  Heating_LastChange.postUpdate(now.millis)
+  Heating_Switch.sendCommand(OFF)
+
+end
+
+//****************************************************************************************************
+// Send the Heating Mode
+//****************************************************************************************************
+
+rule "Update Thermostat Mode"
+when 
+    Member of gRegModes changed to ON
+then   
+
+  // Set the last selected mode
+  LastRegMode = triggeringItem.name
+
+  gHeater.members.forEach [ currHeater |           
+
+    val room = currHeater.groupNames.get(0)
+    var GenericItem currPreset = ScriptServiceUtil.getItemRegistry.getItem( room + '_Preset') as GenericItem         
+
+    // Smart valves
+    if(isSmartValve.apply(currHeater.name) && currPreset.state.toString != Heating_Mode.state.toString)
+    {
+      val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")  
+      if(Heating_Off.state == ON)
+      {
+	      if(currPreset.state.toString != "complex")
+	      {
+          actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/system_mode", "off", true)    
+          Thread::sleep(100)          
+          actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/preset", "complex" , true )              
+	      }
+      } else {
+        actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/system_mode", "auto", true)        
+        Thread::sleep(100)
+        actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/preset", Heating_Mode.state.toString , true )  
+      }                    
+    // Manual valves
+    } else {
+      currPreset.postUpdate(Heating_Mode.state.toString)
+    }  
+    
+    if(Debug_Mode.state == ON){
+      logInfo("Heating Preset","Preset for " + currHeater.label + " : " + Heating_Mode.state.toString)
+    }                
+  ]
+
+  if(Heating_Boost.state == OFF)
+  {
+    try{
+      if(ModeBoostTimer !== null)
+      {
+        ModeBoostTimer.cancel
+        ModeBoostTimer = null    
+      }  
+    } catch(Exception e){
+      logError("Update thermostate mode", e.getMessage())
+    }
+  }  
+
+  Heating_Toogle.sendCommand(ON)
+
+end 
+
+//****************************************************************************************************
+// Force the Heating Mode and cancel the timers if needed
+//****************************************************************************************************
+rule "Force Comfort Mode if no other is chosen"
+when
+  Member of gRegModes changed to OFF
+then  
+  if(LastRegMode == triggeringItem.name){
+      triggeringItem.sendCommand(ON)
+  } else {
+    AnyMode = false      
+    gRegModes.members.forEach [ mode | if ( mode.state == ON ) AnyMode = true ] 
+    if (AnyMode == false) {
+        Heating_Schedule.sendCommand(ON)   
+    }
+  }
+end 
+
+//****************************************************************************************************
+// In manual mode, a change of the zone setpoint is cascaded to the members
+// gSetpoint_Z1 / gSetpoint_Z2 / gSetpoint_Z3 / gSetpoint_Z4
+//****************************************************************************************************
+rule "Update Thermostat Setpoint by Zone"
+when 
+  Member of gMainSetpoints received update
+then     
+
+  /* Only For Manual mode */
+  if(Heating_Manual.state == ON)
+  {   
+    var String zone = triggeringItem.name.split('_').get(1)      
+    var GroupItem currGroup = ScriptServiceUtil.getItemRegistry.getItem( "gSetpoint_" + zone ) as GroupItem  
+
+    currGroup.members.forEach [ currSetpoint  |                            
+
+      val z = triggeringItem.name.split('_').get(1)   
+      var GenericItem currZoneSetpoint = ScriptServiceUtil.getItemRegistry.getItem( 'MainSetpoint_' + z) as GenericItem  
+      var float v = Float.valueOf(currZoneSetpoint.state.toString.split(' ').get(0))       
+
+      val room = currSetpoint.groupNames.get(0)    
+      var GenericItem currHeater = ScriptServiceUtil.getItemRegistry.getItem( room + '_Heating') as GenericItem               
+
+      /* Smart valves */
+      if(isSmartValve.apply(currHeater.name))
+      {
+        try{           
+          //The current setpoint depends on the current selected mode. Should I force it?     
+          val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")    
+          actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/current_heating_setpoint" , v.toString, true)                  
+          Thread::sleep(500)      
+          if (Debug_Mode.state == ON) {  
+            logInfo("Heating Setpoints","{'zone' : '" + z + "' , 'room' : '" + room + "' , 'label' : '" + currHeater.label + "' , 'value' : " + v.toString + '}');      
+          }
+        } catch(Exception e) {         
+          logError("Heating Setpoints" ,  room + " cannot be set to " + v.toString)
+        }  
+      /* Manual Valves */
+      } else {
+        currSetpoint.postUpdate(v)      
+      }
+    ]
+    Heating_Toogle.sendCommand(ON)
+  }
+
+end 
+
+//****************************************************************************************************
+// When a Mode Setpoint is modified, the setpoint of each heater in that zone will follow the setting
+//****************************************************************************************************
+rule "Update Thermostat Setpoint by Mode"
+when 
+  Member of gSetpointModes received update
+then       
+    gHeater.members.filter[s | isSmartValve.apply(s.name)].forEach [ currHeater |   
+
+      //Get the room where the heater is located
+      var String room = currHeater.groupNames.get(0)
+      var GenericItem currSetpoint = ScriptServiceUtil.getItemRegistry.getItem( room + '_Setpoint') as GenericItem     
+
+      var String property = ""
+      var float setpoint  = 21
+
+      switch (triggeringItem.name)
+      {
+        case "Setpoint_Comfort": {
+          property  = "comfort_temperature"
+          setpoint  = Float.valueOf(Setpoint_Comfort.state.toString.split(' ').get(0))
+          }
+
+        case "Setpoint_Eco": {
+          property  = "eco_temperature"
+          setpoint  = Float.valueOf(Setpoint_Eco.state.toString.split(' ').get(0))
+          }
+
+        case "Setpoint_Away": {
+          property  = "away_preset_temperature"
+          setpoint  = Float.valueOf(Setpoint_Away.state.toString.split(' ').get(0))
+          }
+      }
+      
+      //Get the zone of the selected room
+      var String zone = currSetpoint.groupNames.get(1).split('_').get(1)
+
+      // Fix the setpoint depending on the zone      
+      setpoint = setpoint + zoneOffset.apply(zone)
+
+      // Send the setpoints for the heater
+      val actionsBroker = getActions("mqtt","mqtt:broker:mosquitto")  
+      try{
+          actionsBroker.publishMQTT( "zigbee2mqtt/" + currHeater.label + "/set/" + property , setpoint.intValue.toString, true) 
+          if(Debug_Mode.state == ON){
+	          logInfo(triggeringItem.name , zone +":" + room + ":" + currHeater.label + "->" + setpoint.intValue.toString)
+          } 
+      } catch(Exception e) {     
+          logError(triggeringItem.name , zone +":" + room + ":" + currHeater.label + "-> Not changed")
+      } 
+      Thread::sleep(500)
+    ]
+    Heating_Toogle.sendCommand(ON)
+end 
+
+//****************************************************************************************************
+// If the Heating Away is set and the days aways are over, them deactivate it
+//****************************************************************************************************
+rule "Timer for the Days Away"
+when 
+    Time cron "0 0 0 ? * * *" // Every day at 00:00 check the days away
+then 
+  //Check Days Away 
+  if(Heating_Away.state == ON)
+  {
+    try {
+      var DateTime t1 = new DateTime(Heating_FirstDayAway.state.toString)    
+      var DateTime t2 = t1.plusDays(Integer::parseInt(Heating_DaysAway.state.toString))
+
+      if(Debug_Mode.state == ON){
+        logInfo("Heating Away","Away Mode: First day was " + t1.toString)
+        logInfo("Heating Aways","Away Mode: Last day is " + t2.toString)
+      }
+
+      if(now > t2)
+      {
+        if(Debug_Mode.state == ON){
+          logInfo("Heating Away","Away Mode: Away period is over")
+        }    
+        Heating_Schedule.sendCommand(ON)
+      } else {
+        if(Debug_Mode.state == ON){
+          logInfo("Heating Away","Away Mode: Still in the Away period")
+        }         
+      }
+    } catch (Exception e) {
+      logWarn("Heating Away", "Could not evaluate away period - " + e.message)
+    }
+  }
+end
