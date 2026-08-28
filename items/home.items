@@ -1,0 +1,175 @@
+/****************************************************************************************
+System:     OpenHAB version 2.5
+File:       home.items
+Purpose:    To define generic items used by the system
+Author :    Jaime Rubio 2023 (c)
+Notes:      I put the labels in French because they are often used by the UI HabPanel
+*****************************************************************************************/
+
+// Rooms
+Group           Home                        "Malassis"            <house>                                              ["Building"]
+Group           B                           "Sous-sol"            <pantry>             (Home)                          ["Basement"]
+Group           GF                          "Rez-de-chaussée"     <groundfloor>        (Home)                          ["GroundFloor"]
+Group           FF                          "Premier étage"       <firstfloor>         (Home)                          ["FirstFloor"]
+Group           OU                          "Dehors"              <garden>             (Home)                          ["Outdoor"]
+Group           AT                          "Grenier"             <attic>              (Home)                          ["Attic"]
+Group           B_Garage                    "Garage"              <garage>             (B)      
+Group           B_LaundryRoom               "Buanderie"           <washingmachine>     (B)      {ga="Thermostat"[ modes="heat,eco,heatcool,off" , thermostatTemperatureRange="4,25"] }
+Group           B_Studio                    "Studio"              <studio>             (B)     
+Group           B_Cellar                    "Cave"                <cellar>             (B)     
+Group           GF_Entryway                 "Entrée"              <frontdoor>          (GF)     
+Group           GF_Toilet                   "Toilettes"           <toilet>             (GF)     
+Group           GF_DiningRoom               "Salle à manger"      <party>              (GF)     {ga="Thermostat"[ modes="heat,eco,heatcool,off" , thermostatTemperatureRange="4,25"] }
+Group           GF_Lounge                   "Salon"               <sofa>               (GF)     {ga="Thermostat"[ modes="heat,eco,heatcool,off" , thermostatTemperatureRange="4,25"] }
+Group           GF_Kitchen                  "Cuisine"             <kitchen>            (GF)     {ga="Thermostat"[ modes="heat,eco,heatcool,off" , thermostatTemperatureRange="4,25"] }
+Group           GF_MasterBedroom            "Chambre parentale"   <bedroom_red>        (GF)     {ga="Thermostat"[ modes="heat,eco,heatcool,off" , thermostatTemperatureRange="4,25"] }
+Group           GF_Bathroom                 "Salle de bain"       <bath>               (GF)     {ga="Thermostat"[ modes="heat,eco,heatcool,off" , thermostatTemperatureRange="4,25"] }
+Group           FF_Corridor                 "Couloir"             <corridor>           (FF)     
+Group           FF_Bedroom1                 "Chambre Clara"       <bedroom_blue>       (FF)     {ga="Thermostat"[ modes="heat,eco,heatcool,off" , thermostatTemperatureRange="4,25"] }
+Group           FF_Bedroom2                 "Chambre Inés"        <bedroom_red>        (FF)     {ga="Thermostat"[ modes="heat,eco,heatcool,off" , thermostatTemperatureRange="4,25"] }
+Group           FF_Bedroom3                 "Chambre Julia"       <bedroom_green>      (FF)     {ga="Thermostat"[ modes="heat,eco,heatcool,off" , thermostatTemperatureRange="4,25"] }
+Group           FF_Office                   "Bureau"              <office>             (FF)     {ga="Thermostat"[ modes="heat,eco,heatcool,off" , thermostatTemperatureRange="4,25"] }
+Group           FF_Bathroom                 "Salle de bain"       <bath>               (FF)     {ga="Thermostat"[ modes="heat,eco,heatcool,off" , thermostatTemperatureRange="4,25"] }
+Group           FF_WC                       "WC"                  <bath>               (FF)     {ga="Thermostat"[ modes="heat,eco,heatcool,off" , thermostatTemperatureRange="4,25"] }
+Group           OU_Terrace                  "Terrasse"            <terrace>            (OU)     
+Group           OU_Backyard                 "Jardin"              <lawnmower>          (OU)     
+Group           AT_StorageRoom              "Grenier"             <suitcase>           (AT)     
+
+// Settings
+Group           gSettings                   "Paramètres"           <settings>           (Home)
+Switch          Debug_Mode                  "Debug Mode"           <switch>             (Home) 
+
+// Voice Control
+String          VoiceCommand       
+Switch          VoiceListening     
+
+// Functional Groups
+Group:Dimmer:AVG                   gBattery         "Etat des piles"       <battery>            (Home)
+Group:Switch:OR(ON, OFF)           gBatteryLow      "Piles déchargées"     <battery>            (Home)
+Group:Number:AVG                   gSignal          "Signal"               <qualityofservice>   (Home)
+Group:Switch:OR(ON, OFF)           gLighting        "Lumière"              <light>              (Home)
+Group:Switch:OR(ON, OFF)           gGardenLight     "Lumière"              <light>              (Home)
+Group:Contact:OR(OPEN, CLOSED)     gMotion          "Mouvement"            <motion>             (Home)
+Group:Contact:OR(OPEN, CLOSED)     gMotionLight     "Lumière avec capteur" <light>              (Home)
+Group:Switch:OR(ON, OFF)           gMotionSwitch    "Active les capteurs"  <switch>             (Home)
+Group:Switch:OR(ON, OFF)           gSensor          "Détecteur"            <sensor>             (Home)      
+Group:Contact:OR(OPEN, CLOSED)     gDoor            "Portes"               <door>               (Home)
+Group:Contact:OR(OPEN, CLOSED)     gWindow          "Fenêtres"             <door>               (Home)
+Group:Rollershutter:AVG            gShutter         "Volets"               <rollershutter>      (Home)
+Group:Switch:OR(ON, OFF)           gRFLink          "Switches commandés par RFLink"   <light>   (Home)   
+
+// Boiler
+Switch                  B_Boiler_Switch             "Chaudière"                   <boiler>             (B_LaundryRoom)                          {channel="mqtt:topic:mosquitto:boiler:switch"}
+//Number                  B_Boiler_Voltage            "Tension chauffe"             <boiler>             (B_LaundryRoom)                          {channel="mqtt:topic:mosquitto:boiler:voltage"}    
+//Number                  B_Boiler_Current            "Current chauffe"             <boiler>             (B_LaundryRoom)                          {channel="mqtt:topic:mosquitto:boiler:current"}    
+//Number                  B_Boiler_Power              "Puisance chauffe"            <boiler>             (B_LaundryRoom)                          {channel="mqtt:topic:mosquitto:boiler:power"}    
+//Number                  B_Boiler_Total              "Conso totale"                <boiler>             (B_LaundryRoom)                          {channel="mqtt:topic:mosquitto:boiler:total"}    
+//Number                  B_Boiler_Yesterday          "Conso hier"                  <boiler>             (B_LaundryRoom)                          {channel="mqtt:topic:mosquitto:boiler:yesterday"}
+//Number                  B_Boiler_Today              "Conso aujourd'hui"           <boiler>             (B_LaundryRoom)                          {channel="mqtt:topic:mosquitto:boiler:today"}
+
+// Appliances
+Group                   gAppliances                 "Electroménagers"             <appliance>          (Home)
+Switch                  B_AirPurifier_Switch        "Allumage"                    <fan_box>            (B_LaundryRoom, gAppliances)             {ga="AirPurifier"}
+Switch                  B_AirPurifier_Mode          "Mode Sleep"                  <fan_box>            (B_LaundryRoom, gAppliances)                 
+Switch                  B_AirPurifier_Speed         "Haute vitesse"               <fan_box>            (B_LaundryRoom, gAppliances)            
+Switch                  GF_Dishwasher               "Lave-vaisselle"              <appliance>          (FF_Kitchen, gAppliances)        
+
+// Tuya devices
+Group                   gTuya                       "Tuya"                        <appliance>          (Home)
+
+// Switches
+Switch                  AutoDryer                   "Deshumidificateur"           <fan>                (Home, gSettings)
+Switch                  AutoLight                   "Eclairage jardin"            <light>              (Home, gSettings)
+Switch                  AutoMotionLight             "Eclairage par mouvement"     <light>              (Home, gSettings)
+Switch                  AutoAwning                  "Storeban"                    <rollershutter>      (Home, gSettings)
+Switch                  AutoShutters                "Volets"                      <rollershutter>      (Home, gSettings)
+Switch                  AutoScene                   "Simulateur de présence"      <timer>              (Home, gSettings)
+Switch                  PhoneDetection              "Détection téléphones"        <phone>              (Home, gSettings)   
+
+Dimmer                  B_LaundryRoom_HumidityMax   "Seuil d'humidité"            <dimmer>             (B_LaundryRoom) 
+Switch                  B_LaundryRoom_Power         "Prise déshumidificateur"     <poweroutlet>        (B_LaundryRoom)                          {channel="mqtt:topic:mosquitto:powerlet:ssw_laundryroom"}    
+Switch                  GF_Entryway_Power           "Lampe Entrée"                <poweroutlet>        (GF_Entryway, gLighting)                 {channel="mqtt:topic:mosquitto:powerlet:ssw_entryway", ga="Light"}                    
+Switch                  FF_Corridor_Power           "Courant Couloir"             <poweroutlet>        (FF_Corridor, gLighting)                 {channel="mqtt:topic:mosquitto:powerlet:ssw_corridor", ga="Light"}                    
+Switch                  GF_Lounge_Power             "Lampe séjour"                <poweroutlet>        (GF_Lounge, gLighting)                   {channel="mqtt:topic:mosquitto:powerlet:ssw_lounge", ga="Light"}     
+Switch                  OU_Porche_Light             "Lumière porche"              <light>              (OU_Backyard, gLighting)                 {channel="mqtt:topic:mosquitto:lighting:ssw_porch", ga="Light"}        
+Switch                  OU_Terrace_Light            "Lumière terrace"             <light>              (OU_Backyard, gLighting)                 {channel="mqtt:topic:mosquitto:lighting:ssw_terrace", ga="Light"}        
+Switch                  OU_Garage_Light 	   	    "Lumière Dépendence"          <light>              (OU_Backyard, gGardenLight, gRFLink)     ["NewKaku-XXXXXXXX-X"] {channel="mqtt:topic:mosquitto:rflink:light3", ga="Light"}
+Switch                  OU_FrontGate_Light 	   	    "Lumière portail"             <light>              (OU_Backyard, gGardenLight, gRFLink)     ["NewKaku-XXXXXXXX-X"] {channel="mqtt:topic:mosquitto:rflink:light4", ga="Light"}
+Switch                  OU_Pond_Pump                "Pompe bassin"                <switch>             (OU_Backyard)                            {channel="mqtt:topic:mosquitto:pond:ssw_pond"}        
+Switch                  OU_Frontyard                "Pompe cascade"               <switch>             (OU_Backyard)                            {channel="mqtt:topic:mosquitto:frontyard:ssw_frontyard"}        
+
+// Buttons
+String                  GF_AllShutters_Button       "Bouton tous les volets"      <poweroutlet>        (Home)                                   {channel="mqtt:topic:mosquitto:btn_shutters:action"}    
+Dimmer                  GF_AllShutters_Battery      "Batterie tous les volets"    <battery>            (Home)                                   {channel="mqtt:topic:mosquitto:btn_shutters:battery"}    
+Number:Dimensionless    GF_AllShutters_Signal       "Signal Btous les volets"     <qualityofservice>   (Home)                                   {channel="mqtt:topic:mosquitto:btn_shutters:quality"}    
+
+// Shutters 
+// in MQTT binding: [profile="transform:JS", function="invert-blind.js", sourceFormat="%d"]
+Rollershutter           OU_Terrace_Awning           "Store banne"                 <rollershuter>       (OU_Terrace, gRFLink)                    ["RTS-XXXXXX-X"]  {ga="Awning"}
+Rollershutter           OU_Garden_Gate              "Portail"                     <door>               (OU_Backyard, gDoor)                     ["RTS-XXXXXX-X"]  {ga="Gate"}
+Rollershutter           OU_Awning_Key1              "Télécommande 1"              <door>               (OU_Terrace)                             {channel="mqtt:topic:mosquitto:rflink:awning-key1", ga="Awning"}
+Rollershutter           OU_Awning_Key2              "Télécommande 2"              <door>               (OU_Terrace)                             {channel="mqtt:topic:mosquitto:rflink:awning-key2", ga="Awning"}
+Rollershutter           GF_Curtains                 "Volets RdC"                  <rollershutter>      (GF)     
+Rollershutter           GF_DiningRoom_Curtain       "Volet Salle à Manger"        <rollershutter>      (GF_DiningRoom, gShutter)                ["crt_dining"] {channel="mqtt:topic:mosquitto:crt_dining:cover", ga="Shutter"}
+Rollershutter           GF_Lounge_Curtain           "Volet Séjour"                <rollershutter>      (GF_Lounge, gShutter)                    ["crt_lounge"] {channel="mqtt:topic:mosquitto:crt_lounge:cover", ga="Shutter"}
+Rollershutter           GF_MasterBedroom_Curtain    "Volet Chambre parents"       <rollershutter>      (GF_MasterBedroom, gShutter)             ["crt_masterbedroom"] {channel="mqtt:topic:mosquitto:crt_masterbedroom:cover", ga="Shutter"}
+Rollershutter           GF_KitchenOffice            "Volet Office"                <rollershutter>      (GF_Kitchen, gShutter)                   ["crt_kitchenoffice"] {channel="mqtt:topic:mosquitto:crt_kitchenoffice:cover", ga="Shutter"}
+Rollershutter           GF_KitchenDoor              "Volet Porte cuisine"         <rollershutter>      (GF_Kitchen, gShutter)                   ["crt_kitchendoor"] {channel="mqtt:topic:mosquitto:crt_kitchendoor:cover", ga="Shutter"}
+Rollershutter           GF_KitchenSink              "Volet Evier cuisine"         <rollershutter>      (GF_Kitchen, gShutter)                   ["crt_kitchensink"] {channel="mqtt:topic:mosquitto:crt_kitchensink:cover", ga="Shutter"}
+
+//Storeban
+Number:Temperature		Terrace_Temperature		    "Température [%.1f %unit%]"       <temperature>     (OU_Terrace)	                        {channel="mqtt:topic:mosquitto:rflink:barigo"}
+Number:Speed  		    Terrace_Wind_Max  	        "Max Vitesse du vent [%.2f]"                        (OU_Terrace)
+Number:Dimensionless    Terrace_UV_Min              "Min Indice UV [%.1f]"                              (OU_Terrace)
+Number:Temperature		Terrace_Temp_Min 			"Min Température [%.1f %unit%]"   <temperature>     (OU_Terrace)
+DateTime            	Terrace_StartTime       	"Début déploiement storeban"      <timer>           (OU_Terrace)
+DateTime            	Terrace_EndTime         	"Fin déploiement storeban"        <timer>           (OU_Terrace)
+Rollershutter           Terrace_AwningOpen          "Aperture store banne"            <rollershuter>    (OU_Terrace)
+
+//**********************************************************************************    
+// Infrastructure
+//**********************************************************************************
+// RFLink
+Group	    gRFBox      	    "Passerelle RF"	    (Home)	
+String      RFLink_State        "RFLink State"      (gRFBox)     {channel="mqtt:topic:mosquitto:rflink:reception"}
+String      RFLink_Command      "RFLink Command"    (gRFBox)
+
+// There is 2 alternatives to get connection status of a device
+// 1. HTTP Binding:     
+// 2. Network Binding:  {channel="network:pingdevice:tv:online"}
+
+// When using the HTTP Binding, the Java heap and high CPU consumption occurs. Not recommended. Configured at .items file
+// {http="<[https://yourdomainhere.com/getip.txt:3000000:JS(connected.js)]"}
+
+// When using the Network Binding, there is an issue when Resolving (port 5353) and arp/ping fail, but it can be solved
+// See /services/network.cfg
+// 1. Service: {channel="network:servicedevice:mosquitto"}
+// 2. Ping:    {channel="network:pingdevice:modem"}
+
+Group   gNetwork        "Network"       (Home)
+Switch  NetworkOnline_Modem             "Modem"        (gNetwork)              {channel="network:pingdevice:modem:online"}
+Switch  NetworkOnline_Router            "Router"       (gNetwork)              {channel="network:servicedevice:mosquitto:online"}
+Switch  NetworkOnline_Zigbee2mqtt       "Zigbee"       (gNetwork)              {channel="mqtt:topic:zigbee2mqtt:state"}
+Switch  NetworkOnline_RFLink2mqtt       "RFLink"       (gNetwork)              
+
+
+// Server
+Group   gLocalComputer  "OpenHab Server"  (Home)
+String                  LocalComputer_Name           "Serveur"                      (gLocalComputer)                {channel="systeminfo:computer:srv-nas:cpu#name"}
+Number:Dimensionless    LocalComputer_Storage_Total  "HDD [%d]"                     (gLocalComputer)                {channel="systeminfo:computer:srv-nas:storage#total"}
+Number:Dimensionless    LocalComputer_Storage_Used   "HDD [%d %%]"                  (gLocalComputer)                {channel="systeminfo:computer:srv-nas:storage#usedPercent"}
+Number:Dimensionless    LocalComputer_Swap_Total     "Swap [%d]"                    (gLocalComputer)                {channel="systeminfo:computer:srv-nas:swap#total"}
+Number:Dimensionless    LocalComputer_Swap_Used      "Swap [%d %%]"                 (gLocalComputer)                {channel="systeminfo:computer:srv-nas:swap#usedPercent"}
+Number:Dimensionless    LocalComputer_Memory_Total   "RAM [%d]"                     (gLocalComputer)                {channel="systeminfo:computer:srv-nas:memory#total"}
+Number:Dimensionless    LocalComputer_Memory_Used    "RAM [%d %%]"                  (gLocalComputer)                {channel="systeminfo:computer:srv-nas:memory#usedPercent"}
+DateTime                LocalComputer_DateTime       "Heure Locale [%1$tH:%1$tM]"   (gLocalComputer)                {channel="ntp:ntp:local:dateTime"}
+
+// Internet Speed
+Group           gSpeedtest      "SpeedTest"     (Home)
+String          Speedtest_Summary       "Test de vitesse [%s]"             <network>                       (gSpeedtest)
+Number          Speedtest_ResultPing    "Ping [%.3f ms]"                   <time>                          (gSpeedtest)
+Number          Speedtest_ResultDown    "Débit descendant [%.2f Mbit/s]"   <flowpipe>                      (gSpeedtest)
+Number          Speedtest_ResultUp      "Débit montant [%.2f Mbit/s]"      <returnpipe>                    (gSpeedtest)
+String          Speedtest_Running       "Test en cours ... [%s]"           <line>                          (gSpeedtest)
+Switch          Speedtest_Rerun         "Commencer"                        <switch>                        (gSpeedtest)
+DateTime        Speedtest_ResultDate    "Dernier test [%1$td.%1$tm.%1$tY, %1$tH:%1$tM H]"   <calendar>     (gSpeedtest)

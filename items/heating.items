@@ -1,0 +1,334 @@
+/****************************************************************************************
+System:     OpenHAB version 2.5
+File:       heating.items
+Purpose:    To define items used by the Heating System
+Author :    Jaime Rubio 2023 (c)
+Notes:      I put the labels in French because they are often used by the UI HabPanel
+*****************************************************************************************/
+
+//**********************************************************************************
+// Groups
+//**********************************************************************************
+
+// Heating control
+Switch          Heating_Switch              "Commande de chauffage"            <switch>       (Home)       
+Switch          Heating_Timer               "Plage horaire chauffage allumé"   <timer>        (Home)    //ON=Heating period;OFF=Idle period
+Number          Heating_LastChange          "Dernier changement d'état"        <timer>        (Home)    //Last time the boiler changed
+Switch          Heating_Init                "Initialize les radiateurs"        <switch>       (Home)    //Flag to initialize the radiators
+Switch          Heating_Calibrate           "Calibration des radiateurs"       <switch>       (Home)    //Flag to calibrate the radiators
+Switch          Heating_ChildLock           "Sécurité enfants"                 <switch>       (Home)    //Flag to set the child lock
+Switch          Heating_AutoLock            "Blocage des radiateurs"           <switch>       (Home)    //Flag to set the auto lock
+Switch          Heating_Toogle              "Toogle a change of settings"      <switch>       (Home)    //Flag to trigger an update after new settings
+
+// Heater settings
+Number          Heating_BoostTime           "Temps de Boost [%d]"              <timer>        (Home)
+Number          Heating_DaysAway            "Durée des vacances [%d]"          <timer>        (Home)
+DateTime        Heating_FirstDayAway        "Premier jour de vacances"         <timer>        (Home)
+Switch          ValveDetection              "Détection des vannes"             <heating>      (Home)
+
+// Regulation modes
+Group:Switch:OR(ON, OFF)           gRegModes                    (Home)
+Switch          Heating_Schedule            "Mode Horodateur"  <heating>            (gRegModes)    
+Switch          Heating_Comfort             "Mode Confort"     <heating>            (gRegModes)    
+Switch          Heating_Eco                 "Mode Eco"         <heating>            (gRegModes)    
+Switch          Heating_Boost               "Mode Boost"       <heating>            (gRegModes)    
+Switch          Heating_Manual              "Mode Manuel"      <heating>            (gRegModes)    
+Switch          Heating_Away                "Mode Vacances"    <heating>            (gRegModes)    
+Switch          Heating_Off                 "Mode Eteint"      <heating>            (gRegModes)    
+String          Heating_Mode                "Mode Actuel"      <heating>            
+
+
+// Temperature setpoint by mode
+Group:Number:AVG            gSetpointModes
+Number:Temperature          Setpoint_Comfort    "Cible Confort [%.1f %unit%]"       <temperature>         (gSetpointModes)
+Number:Temperature          Setpoint_Eco        "Cible Eco [%.1f %unit%]"           <temperature>         (gSetpointModes)
+Number:Temperature          Setpoint_Away       "Cible Vacances [%.1f %unit%]"      <temperature>         (gSetpointModes)
+Number:Temperature          Setpoint_Loss       "Perte Maximale [%.1f %unit%]"      <temperature>         (Home) 
+
+// Heaters/Radiators/TRV
+Group:Switch:OR(ON, OFF)    gHeater         "Radiateur"                       <heating>      (Home)
+Group:Switch:OR(ON, OFF)    gHeaterIgnored  "Radiateur ignoré"                <heating>      (Home)
+
+// Current average temperatures by zone. Thermostats are grouped by zone
+Group:Number:AVG            gTemperature    "Température"               <temperature>   (Home)
+Group:Number:AVG            gTemp_Z1        "Température Salles d'eau"  <temperature>   (gTemperature)       
+Group:Number:AVG            gTemp_Z2        "Température RdC"           <temperature>   (gTemperature)   
+Group:Number:AVG            gTemp_Z3        "Température EtageZone"     <temperature>   (gTemperature)       
+Group:Number:AVG            gTemp_Z4        "Température Sous-sol"      <temperature>   (gTemperature)  
+Group:Number:AVG            gTemp_Z5        "Température Grenier"       <temperature>   (gTemperature)  
+
+// Current average temperatures by zone. Thermostats are grouped by zone
+Group:Number:AVG            gHumidity       "Humidité"                <humidity>      (Home)
+Group:Number:AVG            gHumidity_Z1    "Humidité Salles d'eau"   <humidity>      (gHumidity)       
+Group:Number:AVG            gHumidity_Z2    "Humidité RdC"            <humidity>      (gHumidity)    
+Group:Number:AVG            gHumidity_Z3    "Humidité Etage"          <humidity>      (gHumidity)    
+Group:Number:AVG            gHumidity_Z4    "Humidité Sous-sol"       <humidity>      (gHumidity)    
+Group:Number:AVG            gHumidity_Z5    "Humidité Grenier"        <humidity>      (gHumidity)    
+
+// Current average temperatures by zone. Thermostats are grouped by zone
+Group:Number:AVG            gPressure       "Pression"                <pressure>      (Home)
+Group:Number:AVG            gPressure_Z1    "Pression Salles d'eau"   <pressure>      (gPressure)       
+Group:Number:AVG            gPressure_Z2    "Pression RdC"            <pressure>      (gPressure)   
+Group:Number:AVG            gPressure_Z3    "Pression Etage"          <pressure>      (gPressure) 
+Group:Number:AVG            gPressure_Z4    "Pression Sous-sol"       <pressure>      (gPressure) 
+Group:Number:AVG            gPressure_Z5    "Pression Grenier"        <pressure>      (gPressure) 
+
+// Main target temperatures by zone (workaround) - Used by knobs
+Group                       gMainSetpoints     "Main set points"                (Home)
+Number:Temperature          MainSetpoint_Z1    "Cible Zone 1 [%.1f %unit%]"     <temperature>   (gMainSetpoints)
+Number:Temperature          MainSetpoint_Z2    "Cible Zone 2 [%.1f %unit%]"     <temperature>   (gMainSetpoints)
+Number:Temperature          MainSetpoint_Z3    "Cible Zone 3 [%.1f %unit%]"     <temperature>   (gMainSetpoints)
+Number:Temperature          MainSetpoint_Z4    "Cible Zone 4 [%.1f %unit%]"     <temperature>   (gMainSetpoints)
+
+// Target temperature by zone - Recorded
+Group                       gSetpoint         "Températures cible"              (Home)
+Group:Number:AVG            gSetpoint_Z1      "Cible Moyenne Zone 1"            <temperature>    (gSetpoint)    
+Group:Number:AVG            gSetpoint_Z2      "Cible Moyenne Zone 2"            <temperature>    (gSetpoint)
+Group:Number:AVG            gSetpoint_Z3      "Cible Moyenne Zone 3"            <temperature>    (gSetpoint)
+Group:Number:AVG            gSetpoint_Z4      "Cible Moyenne Zone 4"            <temperature>    (gSetpoint)
+
+// Heating running state by zone
+Group:Switch:OR(ON, OFF)    gHeater_Z1        "Radiateur Zone 1"                <heater>    (Home)
+Group:Switch:OR(ON, OFF)    gHeater_Z2        "Radiateur Zone 2"                <heater>    (Home)
+Group:Switch:OR(ON, OFF)    gHeater_Z3        "Radiateur Zone 3"                <heater>    (Home)
+Group:Switch:OR(ON, OFF)    gHeater_Z4        "Radiateur Zone 4"                <heater>    (Home)
+Group:Switch:OR(ON, OFF)    gHeater_Z5        "Radiateur Zone 4"                <heater>    (Home)
+
+// Weather Station
+Number:Temperature      OU_Temperature        "Température Ext [%.1f %unit%]"       <temperature>        (OU_Terrace)                           {channel="mqtt:topic:mosquitto:rflink:barigo"}
+
+//**********************************************************************************
+// Thermostats
+//**********************************************************************************
+// ZONE 1 (Z1): Bathrooms (warmest)
+// ZONE 2 (Z2): Living rooms (middle)
+// ZONE 3 (Z3): Bedrooms + Entry (cold)
+// ZONE 4 (Z4): Basement (not heated)
+// ZONE 5 (Z5): Attic
+
+// For Smart Radiator Valves, use a label prefixed by 'srv_' (Smart Radiator Valve)
+// For A non-connected valve, use a label prefixed by 'trv_  (Thermostatic Radiator Valve)
+
+// Entry - Smart Radiator Valve (SRV)
+Switch                  GF_Entryway_Heating     "srv_entry"                       <heating>              (GF_Entryway, gHeater, gHeater_Z3)                  
+Switch                  GF_Entryway_Ignored     "Entrée"                          <error>                (GF_Entryway, gHeaterIgnored)                  
+String                  GF_Entryway_Preset      "Mode"                            <heating>              (GF_Entryway)                               {channel="mqtt:topic:mosquitto:srv_entry:preset"} 
+Switch                  GF_Entryway_BatteryLow  "Entrée"                          <battery>              (GF_Entryway, gBatteryLow)                  {channel="mqtt:topic:mosquitto:srv_entry:battery_low"} 
+Contact                 GF_Entryway_WindowOpen  "Fenêtre ouverte"                 <window>               (GF_Entryway, gWindow)                      //{channel="mqtt:topic:mosquitto:srv_entry:window_open"} 
+Dimmer                  GF_Entryway_Position    "Ouverture"                       <radiator>             (GF_Entryway)                               {channel="mqtt:topic:mosquitto:srv_entry:position" } 
+Number:Temperature      GF_Entryway_Setpoint    "Cible [%.1f %unit%]"             <temperature>          (GF_Entryway, gSetpoint_Z3)                 {channel="mqtt:topic:mosquitto:srv_entry:setpoint", ga="thermostatTemperatureSetpoint"}
+Number:Temperature      GF_Entryway_Offset      "Calibration [%.1f %unit%]"       <temperature>          (GF_Entryway)                               {channel="mqtt:topic:mosquitto:srv_entry:offset"}
+Number:Temperature      GF_Entryway_LocalTemp   "Local [%.1f %unit%]"             <temperature>          (GF_Entryway)                               {channel="mqtt:topic:mosquitto:srv_entry:temperature"}
+Number:Temperature      GF_Entryway_Temperature "Entrée [%.1f %unit%]"            <temperature>          (GF_Entryway, gTemp_Z3)                     {channel="mqtt:topic:mosquitto:thp_entry:temperature", ga="thermostatTemperatureAmbient"}
+Number                  GF_Entryway_Humidity    "Humidité [%.1f %%]"              <humidity>             (GF_Entryway, gHumidity_Z3)                 {channel="mqtt:topic:mosquitto:thp_entry:humidity", ga="thermostatHumidityAmbient"}
+Number:Pressure         GF_Entryway_Pressure    "Pression [%.1f %unit%]"          <pressure>             (GF_Entryway, gPressure_Z3)                 {channel="mqtt:topic:mosquitto:thp_entry:pressure"}
+Number                  GF_Entryway_THPSignal   "Entrée [%d]"                     <signal>               (GF_Entryway, gSignal)                      {channel="mqtt:topic:mosquitto:thp_entry:quality"}
+Dimmer                  GF_Entryway_THPBattery  "Entrée [%d %%]"                  <battery>              (GF_Entryway, gBattery)                     {channel="mqtt:topic:mosquitto:thp_entry:battery"}
+
+// Kitchen - Smart Radiator Valve (SRV)
+Switch                  GF_Kitchen_Heating           "srv_kitchen"                <heating>              (GF_Kitchen, gHeater, gHeater_Z2)            
+Switch                  GF_Kitchen_Ignored           "Cuisine"                    <error>                (GF_Kitchen, gHeaterIgnored)                  
+String                  GF_Kitchen_Preset            "Mode"                       <heating>              (GF_Kitchen)                               {channel="mqtt:topic:mosquitto:srv_kitchen:preset"}       
+Switch                  GF_Kitchen_BatteryLow        "Cuisine"                    <battery>              (GF_Kitchen, gBatteryLow)                  {channel="mqtt:topic:mosquitto:srv_kitchen:battery_low"}
+Contact                 GF_Kitchen_WindowOpen        "Fenêtre ouverte"            <window>               (GF_Kitchen, gWindow)                      //{channel="mqtt:topic:mosquitto:srv_kitchen:window_open"} 
+Dimmer                  GF_Kitchen_Position          "Ouverture"                  <radiator>             (GF_Kitchen)                               {channel="mqtt:topic:mosquitto:srv_kitchen:position" }  
+Number:Temperature      GF_Kitchen_Setpoint          "Cible [%.1f %unit%]"        <temperature>          (GF_Kitchen, gSetpoint_Z2)                 {channel="mqtt:topic:mosquitto:srv_kitchen:setpoint", ga="thermostatTemperatureSetpoint"}
+Number:Temperature      GF_Kitchen_Offset            "Calibration [%.1f %unit%]"  <temperature>          (GF_Kitchen)                               {channel="mqtt:topic:mosquitto:srv_kitchen:offset"}
+Number:Temperature      GF_Kitchen_LocalTemp         "Local [%.1f %unit%]"        <temperature>          (GF_Kitchen)                               {channel="mqtt:topic:mosquitto:srv_kitchen:temperature"}
+Number:Temperature      GF_Kitchen_Temperature       "Cuisine [%.1f %unit%]"      <temperature>          (GF_Kitchen, gTemp_Z2)                     {channel="mqtt:topic:mosquitto:thp_kitchen:temperature", ga="thermostatTemperatureAmbient"}
+Number                  GF_Kitchen_Humidity          "Humidité [%.1f %%]"         <humidity>             (GF_Kitchen, gHumidity_Z2)                 {channel="mqtt:topic:mosquitto:thp_kitchen:humidity", ga="thermostatHumidityAmbient"}
+Number:Pressure         GF_Kitchen_Pressure          "Pression [%.1f %unit%]"     <pressure>             (GF_Kitchen, gPressure_Z2)                 {channel="mqtt:topic:mosquitto:thp_kitchen:pressure"}
+Number                  GF_Kitchen_THPSignal         "Cuisine [%d]"               <signal>               (GF_Kitchen, gSignal)                      {channel="mqtt:topic:mosquitto:thp_kitchen:quality"}
+Dimmer                  GF_Kitchen_THPBattery        "Cuisine [%d %%]"            <battery>              (GF_Kitchen, gBattery)                     {channel="mqtt:topic:mosquitto:thp_kitchen:battery"}
+
+// Lounge - Smart Radiator Valve (SRV)
+Switch                  GF_Lounge_Heating       "srv_lounge"                      <heating>              (GF_Lounge, gHeater, gHeater_Z2)                    
+Switch                  GF_Lounge_Ignored       "Séjour"                          <error>                (GF_Lounge, gHeaterIgnored)                  
+String                  GF_Lounge_Preset        "Mode"                            <heating>              (GF_Lounge)                                {channel="mqtt:topic:mosquitto:srv_lounge:preset"} 
+Switch                  GF_Lounge_BatteryLow    "Séjour"                          <battery>              (GF_Lounge, gBatteryLow)                   {channel="mqtt:topic:mosquitto:srv_lounge:battery_low"}
+Contact                 GF_Lounge_WindowOpen    "Fenêtre ouverte"                 <window>               (GF_Lounge, gWindow)                       //{channel="mqtt:topic:mosquitto:srv_lounge:window_open"} 
+Dimmer                  GF_Lounge_Position      "Ouverture"                       <radiator>             (GF_Lounge)                                {channel="mqtt:topic:mosquitto:srv_lounge:position"}  
+Number:Temperature      GF_Lounge_Setpoint      "Cible [%.1f %unit%]"             <temperature>          (GF_Lounge, gSetpoint_Z2)                  {channel="mqtt:topic:mosquitto:srv_lounge:setpoint", ga="thermostatTemperatureSetpoint"}
+Number:Temperature      GF_Lounge_Offset        "Calibration [%.1f %unit%]"       <temperature>          (GF_Lounge)                                {channel="mqtt:topic:mosquitto:srv_lounge:offset"}
+Number:Temperature      GF_Lounge_LocalTemp     "Local [%.1f %unit%]"             <temperature>          (GF_Lounge)                                {channel="mqtt:topic:mosquitto:srv_lounge:temperature"}
+Number:Temperature      GF_Lounge_Temperature   "Séjour [%.1f %unit%]"            <temperature>          (GF_Lounge, gTemp_Z2)                      {channel="mqtt:topic:mosquitto:thp_living:temperature", ga="thermostatTemperatureAmbient"}
+Number:Pressure         GF_Lounge_Pressure      "Pression [%.1f %unit%]"          <pressure>             (GF_Lounge, gPressure_Z2)                  {channel="mqtt:topic:mosquitto:thp_living:pressure"}
+Number                  GF_Lounge_Humidity      "Humidité [%.1f %%]"              <humidity>             (GF_Lounge, gHumidity_Z2)                  {channel="mqtt:topic:mosquitto:thp_living:humidity" , ga="thermostatHumidityAmbient"}
+Number                  GF_Lounge_THPSignal     "Séjour [%d]"                     <signal>               (GF_Lounge, gSignal)                       {channel="mqtt:topic:mosquitto:thp_living:quality"}
+Dimmer                  GF_Lounge_THPBattery    "Séjour [%d %%]"                  <battery>              (GF_Lounge, gBattery)                      {channel="mqtt:topic:mosquitto:thp_living:battery"}
+
+//Dining room - Smart Radiator Valve (SRV)
+Switch                  GF_DiningRoom_Heating       "srv_dining"                  <heating>              (GF_DiningRoom, gHeater, gHeater_Z2)          
+Switch                  GF_DiningRoom_Ignored       "S. à Manger"                 <error>                (DiningRoom, gHeaterIgnored)                  
+String                  GF_DiningRoom_Preset        "Mode"                        <heating>              (GF_DiningRoom)                            {channel="mqtt:topic:mosquitto:srv_dining:preset"}     
+Switch                  GF_DiningRoom_BatteryLow    "S. à Manger"                 <battery>              (GF_DiningRoom, gBatteryLow)               {channel="mqtt:topic:mosquitto:srv_dining:battery_low"}
+Contact                 GF_DiningRoom_WindowOpen    "Fenêtre ouverte"             <window>               (GF_DiningRoom, gWindow)                   //{channel="mqtt:topic:mosquitto:srv_dining:window_open"} 
+Dimmer                  GF_DiningRoom_Position      "Ouverture"                   <radiator>             (GF_DiningRoom)                            {channel="mqtt:topic:mosquitto:srv_dining:position"}  
+Number:Temperature      GF_DiningRoom_Setpoint      "Cible [%.1f %unit%]"         <temperature>          (GF_DiningRoom, gSetpoint_Z2)              {channel="mqtt:topic:mosquitto:srv_dining:setpoint", ga="thermostatTemperatureSetpoint"}
+Number:Temperature      GF_DiningRoom_Offset        "Calibration [%.1f %unit%]"   <temperature>          (GF_DiningRoom)                            {channel="mqtt:topic:mosquitto:srv_dining:offset"}
+Number:Temperature      GF_DiningRoom_LocalTemp     "Local [%.1f %unit%]"         <temperature>          (GF_DiningRoom)                            {channel="mqtt:topic:mosquitto:srv_dining:temperature"}
+Number:Temperature      GF_DiningRoom_Temperature   "S. à Manger [%.1f %unit%]"   <temperature>          (GF_DiningRoom, gTemp_Z2)                  {channel="mqtt:topic:mosquitto:thp_living:temperature", ga="thermostatTemperatureAmbient"}
+Number                  GF_DiningRoom_Humidity      "Humidité [%.1f %%]"          <humidity>             (GF_DiningRoom, gHumidity_Z2)              {channel="mqtt:topic:mosquitto:thp_living:humidity" , ga="thermostatHumidityAmbient"}
+Number:Pressure         GF_DiningRoom_Pressure      "Pression [%.1f %unit%]"      <pressure>             (GF_DiningRoom, gPressure_Z2)              {channel="mqtt:topic:mosquitto:thp_living:pressure"}
+Number                  GF_DiningRoom_THPSignal     "S. à Manger [%d]"            <signal>               (GF_DiningRoom, gSignal)                   {channel="mqtt:topic:mosquitto:thp_living:quality"}
+Dimmer                  GF_DiningRoom_THPBattery    "S. à Manger [%d %%]"         <battery>              (GF_DiningRoom, gBattery)                  {channel="mqtt:topic:mosquitto:thp_living:battery"}
+
+// Masterbedroom
+Switch                  GF_MasterBedroom_Heating     "trv_masterbedroom"          <heating>              (GF_MasterBedroom, gHeater, gHeater_Z3)             
+Switch                  GF_MasterBedroom_Ignored     "Ch. Parents"                <error>                (MasterBedroom, gHeaterIgnored)                  
+String                  GF_MasterBedroom_Preset      "Mode"                       <heating>              (GF_MasterBedroom)                         //{channel="mqtt:topic:mosquitto:trv_masterbedroom:preset"} 
+Switch                  GF_MasterBedroom_BatteryLow  "Ch. Parents"                <battery>              (GF_MasterBedroom, gBatteryLow)            //{channel="mqtt:topic:mosquitto:trv_masterbedroom:battery_low"}
+Contact                 GF_MasterBedroom_WindowOpen  "Fenêtre ouverte"            <window>               (GF_MasterBedroom, gWindow)                //{channel="mqtt:topic:mosquitto:trv_masterbedroom:window_open"} 
+Dimmer                  GF_MasterBedroom_Position    "Ouverture"                  <radiator>             (GF_MasterBedroom)                         //{channel="mqtt:topic:mosquitto:trv_masterbedroom:position" }  
+Number:Temperature      GF_MasterBedroom_Setpoint    "Cible [%.1f %unit%]"        <temperature>          (GF_MasterBedroom, gSetpoint_Z3)           //{channel="mqtt:topic:mosquitto:trv_masterbedroom:setpoint",ga="thermostatTemperatureSetpoint"}
+Number:Temperature      GF_Masterbedroom_Offset      "Calibration [%.1f %unit%]"  <temperature>          (GF_Masterbedroom)                         //{channel="mqtt:topic:mosquitto:trv_masterbedroom:offset"}
+Number:Temperature      GF_MasterBedroom_LocalTemp   "Local [%.1f %unit%]"        <temperature>          (GF_MasterBedroom)                         {channel="mqtt:topic:mosquitto:thp_masterbedroom:temperature"}
+Number:Temperature      GF_MasterBedroom_Temperature "Ch. Parents [%.1f %unit%]"  <temperature>          (GF_MasterBedroom, gTemp_Z3)               {channel="mqtt:topic:mosquitto:thp_masterbedroom:temperature", ga="thermostatTemperatureAmbient"}
+Number                  GF_MasterBedroom_Humidity    "Humidité [%.1f %%]"         <humidity>             (GF_MasterBedroom, gHumidity_Z3)           {channel="mqtt:topic:mosquitto:thp_masterbedroom:humidity", ga="thermostatHumidityAmbient"}
+Number:Pressure         GF_MasterBedroom_Pressure    "Pression [%.1f %unit%]"     <pressure>             (GF_MasterBedroom, gPressure_Z3)           {channel="mqtt:topic:mosquitto:thp_masterbedroom:pressure"}
+Number                  GF_MasterBedroom_THPSignal   "Ch. Parents [%d]"           <signal>               (GF_MasterBedroom, gSignal)                {channel="mqtt:topic:mosquitto:thp_masterbedroom:quality"}
+Dimmer                  GF_MasterBedroom_THPBattery  "Ch. Parents [%d %%]"        <battery>              (GF_MasterBedroom, gBattery)               {channel="mqtt:topic:mosquitto:thp_masterbedroom:battery"}
+
+// Master bathroom
+Switch                  GF_Bathroom_Heating          "trv_masterbath"             <heating>              (GF_Bathroom, gHeater, gHeater_Z1)                 
+Switch                  GF_Bathroom_Ignored          "SdB Parents"                <error>                (GF_Bathroom, gHeaterIgnored)                  
+String                  GF_Bathroom_Preset           "Mode"                       <heating>              (GF_Bathroom)                               //{channel="mqtt:topic:mosquitto:trv_masterbath:preset"}     
+Switch                  GF_Bathroom_BatteryLow       "SdB Parents"                <battery>              (GF_Bathroom, gBatteryLow)                  //{channel="mqtt:topic:mosquitto:trv_masterbath:battery_low"}
+Contact                 GF_Bathroom_WindowOpen       "Fenêtre ouverte"            <window>               (GF_Bathroom, gWindow)                      //{channel="mqtt:topic:mosquitto:trv_masterbath:window_open"} 
+Dimmer                  GF_Bathroom_Position         "Ouverture"                  <radiator>             (GF_Bathroom)                               //{channel="mqtt:topic:mosquitto:trv_masterbath:position" }  
+Number:Temperature      GF_Bathroom_Setpoint         "Cible [%.1f %unit%]"        <temperature>          (GF_Bathroom, gSetpoint_Z1)                 //{channel="mqtt:topic:mosquitto:trv_masterbath:setpoint",ga="thermostatTemperatureSetpoint"}
+Number:Temperature      GF_Bathroom_Offset           "Calibration [%.1f %unit%]"  <temperature>          (GF_Bathroom)                               //{channel="mqtt:topic:mosquitto:trv_masterbath:offset"}
+Number:Temperature      GF_Bathroom_LocalTemp        "Local [%.1f %unit%]"        <temperature>          (GF_Bathroom)                               {channel="mqtt:topic:mosquitto:thp_masterbath:temperature"}
+Number:Temperature      GF_Bathroom_Temperature      "SdB Parents [%.1f %unit%]"  <temperature>          (GF_Bathroom, gTemp_Z1)                     {channel="mqtt:topic:mosquitto:thp_masterbath:temperature", ga="thermostatTemperatureAmbient"}
+Number                  GF_Bathroom_Humidity         "Humidité [%.1f %%]"         <humidity>             (GF_Bathroom, gHumidity_Z1)                 {channel="mqtt:topic:mosquitto:thp_masterbath:humidity", ga="thermostatHumidityAmbient"}
+Number:Pressure         GF_Bathroom_Pressure         "Pression [%.1f %unit%]"     <pressure>             (GF_Bathroom, gPressure_Z1)                 {channel="mqtt:topic:mosquitto:thp_masterbath:pressure"}
+Number                  GF_Bathroom_THPSignal        "SdB Parents [%d]"           <signal>               (GF_Bathroom, gSignal)                      {channel="mqtt:topic:mosquitto:thp_masterbath:quality"}
+Dimmer                  GF_Bathroom_THPBattery       "SdB Parents [%d %%]"        <battery>              (GF_Bathroom, gBattery)                     {channel="mqtt:topic:mosquitto:thp_masterbath:battery"}
+
+// Bathroom - Smart Radiator Valve (SRV)
+Switch                  FF_Bathroom_Heating         "srv_bathroom"                <heating>              (FF_Bathroom, gHeater, gHeater_Z1)                            
+Switch                  FF_Bathroom_Ignored         "SdB Enfants"                 <error>                (FF_Bathroom, gHeaterIgnored)                  
+String                  FF_Bathroom_Preset          "Mode"                        <heating>              (FF_Bathroom)                              {channel="mqtt:topic:mosquitto:srv_bathroom:preset"}     
+Switch                  FF_Bathroom_BatteryLow      "SdB Enfants"                 <battery>              (FF_Bathroom, gBatteryLow)                 {channel="mqtt:topic:mosquitto:srv_bathroom:battery_low"}
+Contact                 FF_Bathroom_WindowOpen      "Fenêtre ouverte"             <window>               (FF_Bathroom, gWindow)                     //{channel="mqtt:topic:mosquitto:srv_bathroom:window_open"} 
+Dimmer                  FF_Bathroom_Position        "Ouverture"                   <radiator>             (FF_Bathroom)                              {channel="mqtt:topic:mosquitto:srv_bathroom:position" }   
+Number:Temperature      FF_Bathroom_Setpoint        "Cible [%.1f %unit%]"         <temperature>          (FF_Bathroom, gSetpoint_Z1)                {channel="mqtt:topic:mosquitto:srv_bathroom:setpoint", ga="thermostatTemperatureSetpoint"}
+Number:Temperature      FF_Bathroom_Offset          "Calibration [%.1f %unit%]"   <temperature>          (FF_Bathroom)                              {channel="mqtt:topic:mosquitto:srv_bathroom:offset"}
+Number:Temperature      FF_Bathroom_LocalTemp       "Local [%.1f %unit%]"         <temperature>          (FF_Bathroom)                              {channel="mqtt:topic:mosquitto:srv_bathroom:temperature"}
+Number:Temperature      FF_Bathroom_Temperature     "SdB Enfants [%.1f %unit%]"   <temperature>          (FF_Bathroom, gTemp_Z1)                    {channel="mqtt:topic:mosquitto:thp_bathroom:temperature", ga="thermostatTemperatureAmbient"}
+Number                  FF_Bathroom_Humidity        "Humidité [%.1f %%]"          <humidity>             (FF_Bathroom, gHumidity_Z1)                {channel="mqtt:topic:mosquitto:thp_bathroom:humidity", ga="thermostatHumidityAmbient"}
+Number:Pressure         FF_Bathroom_Pressure        "Pression [%.1f %unit%]"      <pressure>             (FF_Bathroom, gPressure_Z1)                {channel="mqtt:topic:mosquitto:thp_bathroom:pressure"}
+Number                  FF_Bathroom_THPSignal       "SdB Enfants [%d]"            <signal>               (FF_Bathroom, gSignal)                     {channel="mqtt:topic:mosquitto:thp_bathroom:quality"}
+Dimmer                  FF_Bathroom_THPBattery      "SdB Enfants [%d %%]"         <battery>              (FF_Bathroom, gBattery)                    {channel="mqtt:topic:mosquitto:thp_bathroom:battery"}
+
+// First bedroom
+Switch                  FF_Bedroom1_Heating         "trv_clara"                   <heating>              (FF_Bedroom1, gHeater, gHeater_Z3)                 
+Switch                  FF_Bedroom1_Ignored         "Clara"                       <error>                (FF_Bedroom1, gHeaterIgnored)     
+String                  FF_Bedroom1_Preset          "Mode"                        <heating>              (FF_Bedroom1)                              //{channel="mqtt:topic:mosquitto:trv_clara:preset"}     
+Switch                  FF_Bedroom1_BatteryLow      "Clara"                       <battery>              (FF_Bedroom1, gBatteryLow)                 //{channel="mqtt:topic:mosquitto:trv_clara:battery_low"}
+Contact                 FF_Bedroom1_WindowOpen      "Fenêtre ouverte"             <window>               (FF_Bedroom1, gWindow)                     //{channel="mqtt:topic:mosquitto:trv_clara:window_open"} 
+Dimmer                  FF_Bedroom1_Position        "Ouverture"                   <radiator>             (FF_Bedroom1)                              //{channel="mqtt:topic:mosquitto:trv_clara:position" }  
+Number:Temperature      FF_Bedroom1_Setpoint        "Cible [%.1f %unit%]"         <temperature>          (FF_Bedroom1, gSetpoint_Z3)                //{channel="mqtt:topic:mosquitto:trv_clara:setpoint", ga="thermostatTemperatureSetpoint"}
+Number:Temperature      FF_Bedroom1_Offset          "Calibration [%.1f %unit%]"   <temperature>          (FF_Bedroom1)                              //{channel="mqtt:topic:mosquitto:trv_clara:offset"}
+Number:Temperature      FF_Bedroom1_LocalTemp       "Local [%.1f %unit%]"         <temperature>          (FF_Bedroom1)                              {channel="mqtt:topic:mosquitto:thp_clara:temperature"}
+Number:Temperature      FF_Bedroom1_Temperature     "Clara [%.1f %unit%]"         <temperature>          (FF_Bedroom1, gTemp_Z3)                    {channel="mqtt:topic:mosquitto:thp_clara:temperature", ga="thermostatTemperatureAmbient"}
+Number                  FF_Bedroom1_Humidity        "Humidité [%.1f %%]"          <humidity>             (FF_Bedroom1, gHumidity_Z3)                {channel="mqtt:topic:mosquitto:thp_clara:humidity", ga="thermostatHumidityAmbient"}
+Number:Pressure         FF_Bedroom1_Pressure        "Pression [%.1f %unit%]"      <pressure>             (FF_Bedroom1, gPressure_Z3)                {channel="mqtt:topic:mosquitto:thp_clara:pressure"}
+Number                  FF_Bedroom1_THPSignal       "Clara [%d]"                  <signal>               (FF_Bedroom1, gSignal)                     {channel="mqtt:topic:mosquitto:thp_clara:quality"}
+Dimmer                  FF_Bedroom1_THPBattery      "Clara [%d %%]"               <battery>              (FF_Bedroom1, gBattery)                    {channel="mqtt:topic:mosquitto:thp_clara:battery"}
+
+// Second Bedroom
+Switch                  FF_Bedroom2_Heating         "trv_ines"                    <heating>              (FF_Bedroom2, gHeater, gHeater_Z3)  
+Switch                  FF_Bedroom2_Ignored         "Inés"                        <error>                (FF_Bedroom2, gHeaterIgnored)     
+String                  FF_Bedroom2_Preset          "Mode"                        <heating>              (FF_Bedroom2)                              //{channel="mqtt:topic:mosquitto:trv_ines:preset"}     
+Switch                  FF_Bedroom2_BatteryLow      "Inés"                        <battery>              (FF_Bedroom2, gBatteryLow)                 //{channel="mqtt:topic:mosquitto:trv_ines:battery_low"}
+Contact                 FF_Bedroom2_WindowOpen      "Fenêtre ouverte"             <window>               (FF_Bedroom2, gWindow)                     //{channel="mqtt:topic:mosquitto:trv_ines:window_open"} 
+Dimmer                  FF_Bedroom2_Position        "Ouverture"                   <radiator>             (FF_Bedroom2)                              //{channel="mqtt:topic:mosquitto:trv_ines:position" }         
+Number:Temperature      FF_Bedroom2_Setpoint        "Cible [%.1f %unit%]"         <temperature>          (FF_Bedroom2, gSetpoint_Z3)                //{channel="mqtt:topic:mosquitto:trv_ines:setpoint", ga="thermostatTemperatureSetpoint"}
+Number:Temperature      FF_Bedroom2_Offset          "Calibration [%.1f %unit%]"   <temperature>          (FF_Bedroom2)                              //{channel="mqtt:topic:mosquitto:trv_ines:offset"}
+Number:Temperature      FF_Bedroom2_LocalTemp       "Local [%.1f %unit%]"         <temperature>          (FF_Bedroom2)                              {channel="mqtt:topic:mosquitto:thp_ines:temperature"}
+Number:Temperature      FF_Bedroom2_Temperature     "Inés [%.1f %unit%]"          <temperature>          (FF_Bedroom2, gTemp_Z3)                    {channel="mqtt:topic:mosquitto:thp_ines:temperature", ga="thermostatTemperatureAmbient"}
+Number                  FF_Bedroom2_Humidity        "Humidité [%.1f %%]"          <humidity>             (FF_Bedroom2, gHumidity_Z3)                {channel="mqtt:topic:mosquitto:thp_ines:humidity", ga="thermostatHumidityAmbient"}
+Number:Pressure         FF_Bedroom2_Pressure        "Pression [%.1f %unit%]"      <pressure>             (FF_Bedroom2, gPressure_Z3)                {channel="mqtt:topic:mosquitto:thp_ines:pressure"}
+Number                  FF_Bedroom2_THPSignal       "Inés [%d]"                   <signal>               (FF_Bedroom2, gSignal)                     {channel="mqtt:topic:mosquitto:thp_ines:quality"}
+Dimmer                  FF_Bedroom2_THPBattery      "Inés [%d %%]"                <battery>              (FF_Bedroom2, gBattery)                    {channel="mqtt:topic:mosquitto:thp_ines:battery"}
+
+// Third bedroom
+Switch                  FF_Bedroom3_Heating         "trv_julia"                   <heating>              (FF_Bedroom3, gHeater, gHeater_Z3)                 
+Switch                  FF_Bedroom3_Ignored         "Julia"                       <error>                (FF_Bedroom3, gHeaterIgnored)                  
+String                  FF_Bedroom3_Preset          "Mode"                        <heating>              (FF_Bedroom3)                              //{channel="mqtt:topic:mosquitto:trv_julia:preset"}     
+Switch                  FF_Bedroom3_BatteryLow      "Julia"                       <battery>              (FF_Bedroom3, gBatteryLow)                 //{channel="mqtt:topic:mosquitto:trv_julia:battery_low"}
+Contact                 FF_Bedroom3_WindowOpen      "Fenêtre ouverte"             <window>               (FF_Bedroom3, gWindow)                     //{channel="mqtt:topic:mosquitto:trv_julia:window_open"} 
+Dimmer                  FF_Bedroom3_Position        "Ouverture"                   <radiator>             (FF_Bedroom3)                              //{channel="mqtt:topic:mosquitto:trv_julia:position" }   
+Number:Temperature      FF_Bedroom3_Setpoint        "Cible [%.1f %unit%]"         <temperature>          (FF_Bedroom3, gSetpoint_Z3)                //{channel="mqtt:topic:mosquitto:trv_julia:setpoint", ga="thermostatTemperatureAmbient"}
+Number:Temperature      FF_Bedroom3_Offset          "Calibration [%.1f %unit%]"   <temperature>          (FF_Bedroom3)                              //{channel="mqtt:topic:mosquitto:trv_julia:offset"}
+Number:Temperature      FF_Bedroom3_LocalTemp       "Local [%.1f %unit%]"         <temperature>          (FF_Bedroom3)                              {channel="mqtt:topic:mosquitto:thp_julia:temperature"}
+Number:Temperature      FF_Bedroom3_Temperature     "Julia [%.1f %unit%]"         <temperature>          (FF_Bedroom3, gTemp_Z3)                    {channel="mqtt:topic:mosquitto:thp_julia:temperature", ga="thermostatTemperatureAmbient"}
+Number                  FF_Bedroom3_Humidity        "Humidité [%.1f %%]"          <humidity>             (FF_Bedroom3, gHumidity_Z3)                {channel="mqtt:topic:mosquitto:thp_julia:humidity", ga="thermostatHumidityAmbient"}
+Number:Pressure         FF_Bedroom3_Pressure        "Pression [%.1f %unit%]"      <pressure>             (FF_Bedroom3, gPressure_Z3)                {channel="mqtt:topic:mosquitto:thp_julia:pressure"}
+Number                  FF_Bedroom3_THPSignal       "Julia [%d]"                  <signal>               (FF_Bedroom3, gSignal)                     {channel="mqtt:topic:mosquitto:thp_julia:quality"}
+Dimmer                  FF_Bedroom3_THPBattery      "Julia [%d %%]"               <battery>              (FF_Bedroom3, gBattery)                    {channel="mqtt:topic:mosquitto:thp_julia:battery"}
+
+// Office
+Switch                  FF_Office_Heating           "trv_office"                  <heating>              (FF_Office, gHeater, gHeater_Z3)                            
+Switch                  FF_Office_Ignored           "Bureau"                      <error>                (FF_Office, gHeaterIgnored)                  
+String                  FF_Office_Preset            "Mode"                        <heating>              (FF_Office)                                //{channel="mqtt:topic:mosquitto:srv_office:preset"}     
+Switch                  FF_Office_BatteryLow        "Bureau"                      <battery>              (FF_Office, gBatteryLow)                   //{channel="mqtt:topic:mosquitto:srv_office:battery_low"}
+Contact                 FF_Office_WindowOpen        "Fenêtre ouverte"             <window>               (FF_Office, gWindow)                       //{channel="mqtt:topic:mosquitto:srv_office:window_open"} 
+Dimmer                  FF_Office_Position          "Ouverture"                   <radiator>             (FF_Office)                                //{channel="mqtt:topic:mosquitto:srv_office:position" }   
+Number:Temperature      FF_Office_Setpoint          "Cible [%.1f %unit%]"         <temperature>          (FF_Office, gSetpoint_Z3)                  //{channel="mqtt:topic:mosquitto:srv_office:setpoint", ga="thermostatTemperatureSetpoint"}
+Number:Temperature      FF_Office_Offset            "Calibration [%.1f %unit%]"   <temperature>          (FF_Office)                                //{channel="mqtt:topic:mosquitto:srv_office:offset"}
+Number:Temperature      FF_Office_LocalTemp         "Local [%.1f %unit%]"         <temperature>          (FF_Office)                                {channel="mqtt:topic:mosquitto:thp_office:temperature"}
+Number:Temperature      FF_Office_Temperature       "Bureau [%.1f %unit%]"        <temperature>          (FF_Office, gTemp_Z3)                      {channel="mqtt:topic:mosquitto:thp_office:temperature", ga="thermostatTemperatureAmbient"}
+Number                  FF_Office_Humidity          "Humidité [%.1f %%]"          <humidity>             (FF_Office, gHumidity_Z3)                  {channel="mqtt:topic:mosquitto:thp_office:humidity", ga="thermostatHumidityAmbient"}
+Number:Pressure         FF_Office_Pressure          "Pression [%.1f %unit%]"      <pressure>             (FF_Office, gPressure_Z3)                  {channel="mqtt:topic:mosquitto:thp_office:pressure"}
+Number                  FF_Office_THPSignal         "Bureau [%d]"                 <signal>               (FF_Office, gSignal)                       {channel="mqtt:topic:mosquitto:thp_office:quality"}
+Dimmer                  FF_Office_THPBattery        "Bureau [%d %%]"              <battery>              (FF_Office, gBattery)                      {channel="mqtt:topic:mosquitto:thp_office:battery"}
+
+// WC - Smart Radiator Valve (SRV)
+Switch                  FF_WC_Heating               "srv_wc"                      <heating>              (FF_WC, gHeater, gHeater_Z1)                                  
+Switch                  FF_WC_Ignored               "WC"                          <error>                (FF_WC, gHeaterIgnored)                  
+String                  FF_WC_Preset                "Mode"                        <heating>              (FF_WC)                                    {channel="mqtt:topic:mosquitto:srv_wc:preset"}     
+Switch                  FF_WC_BatteryLow            "WC"                          <battery>              (FF_WC, gBatteryLow)                       {channel="mqtt:topic:mosquitto:srv_wc:battery_low"}
+Contact                 FF_WC_WindowOpen            "Fenêtre ouverte"             <window>               (FF_WC, gWindow)                           //{channel="mqtt:topic:mosquitto:srv_wc:window_open"} 
+Dimmer                  FF_WC_Position              "Ouverture"                   <radiator>             (FF_WC)                                    {channel="mqtt:topic:mosquitto:srv_wc:position" }   
+Number:Temperature      FF_WC_Setpoint              "Cible [%.1f %unit%]"         <temperature>          (FF_WC, gSetpoint_Z1)                      {channel="mqtt:topic:mosquitto:srv_wc:setpoint", ga="thermostatTemperatureSetpoint"}
+Number:Temperature      FF_WC_Offset                "Calibration [%.1f %unit%]"   <temperature>          (FF_WC)                                    {channel="mqtt:topic:mosquitto:srv_wc:offset"}
+Number:Temperature      FF_WC_LocalTemp             "Local [%.1f %unit%]"         <temperature> 	     (FF_WC)                                    {channel="mqtt:topic:mosquitto:srv_wc:temperature"}
+Number:Temperature      FF_WC_Temperature           "WC [%.1f %unit%]"            <temperature> 	     (FF_WC, gTemp_Z1)                          {channel="mqtt:topic:mosquitto:thp_wc:temperature", ga="temperatureAmbientCelsius"}
+Number                  FF_WC_Humidity              "Humidité [%.1f %%]"          <humidity>             (FF_WC, gHumidity_Z1)                      {channel="mqtt:topic:mosquitto:thp_wc:humidity", ga="thermostatHumidityAmbient"}
+Number:Pressure         FF_WC_Pressure              "Pression [%.1f %unit%]"      <pressure>             (FF_WC, gPressure_Z1)                      {channel="mqtt:topic:mosquitto:thp_wc:pressure"}
+Number                  FF_WC_THPSignal             "WC [%d]"                     <signal>               (FF_WC, gSignal)                           {channel="mqtt:topic:mosquitto:thp_wc:quality"}
+Dimmer                  FF_WC_THPBattery            "WC [%d %%]"                  <battery>              (FF_WC, gBattery)                          {channel="mqtt:topic:mosquitto:thp_wc:battery"} 
+
+// Laundry
+Number:Temperature      B_LaundryRoom_Temperature   "Buanderie [%.1f %unit%]"     <temperature>          (B_LaundryRoom, gTemp_Z4)                  {channel="mqtt:topic:mosquitto:thp_laundry:temperature", ga="temperatureAmbientCelsius"}
+Number                  B_LaundryRoom_Humidity      "Humidité [%.1f %%]"          <humidity>             (B_LaundryRoom, gHumidity_Z4)              {channel="mqtt:topic:mosquitto:thp_laundry:humidity", ga="humidityAmbientPercent"}
+Number:Pressure         B_LaundryRoom_Pressure      "Pression [%.1f %unit%]"      <pressure>             (B_LaundryRoom, gPressure_Z4)              {channel="mqtt:topic:mosquitto:thp_laundry:pressure"}
+Number                  B_LaundryRoom_THPSignal     "Buanderie [%d]"              <signal>               (B_LaundryRoom, gSignal)                   {channel="mqtt:topic:mosquitto:thp_laundry:quality"}
+Dimmer                  B_LaundryRoom_THPBattery    "Buanderie [%d %%]"           <battery>              (B_LaundryRoom, gBattery)                  {channel="mqtt:topic:mosquitto:thp_laundry:battery"}
+// Studio
+Number:Temperature      B_Studio_Temperature        "Studio [%.1f %unit%]"        <temperature>          (B_Studio, gTemp_Z4)                       {channel="mqtt:topic:mosquitto:thp_laundry:temperature", ga="temperatureAmbientCelsius"}
+Number                  B_Studio_Humidity           "Humidité [%.1f %%]"          <humidity>             (B_Studio, gHumidity_Z4)                   {channel="mqtt:topic:mosquitto:thp_laundry:humidity", ga="humidityAmbientPercent"}
+Number:Pressure         B_Studio_Pressure           "Pression [%.1f %unit%]"      <pressure>             (B_Studio, gPressure_Z4)                   {channel="mqtt:topic:mosquitto:thp_laundry:pressure"}
+Number                  B_Studio_THPSignal          "Studio [%d]"                 <signal>               (B_Studio, gSignal)                        {channel="mqtt:topic:mosquitto:thp_laundry:quality"}
+Dimmer                  B_Studio_THPBattery         "Studio [%d %%]"              <battery>              (B_Studio, gBattery)                       {channel="mqtt:topic:mosquitto:thp_laundry:battery"}
+// Cellar
+Number:Temperature      B_Cellar_Temperature        "Cave [%.1f %unit%]"          <temperature>          (B_Cellar, gTemp_Z4)                       {channel="mqtt:topic:mosquitto:thp_cellar:temperature", ga="temperatureAmbientCelsius"}
+Number                  B_Cellar_Humidity           "Humidité [%.1f %%]"          <humidity>             (B_Cellar, gHumidity_Z4)                   {channel="mqtt:topic:mosquitto:thp_cellar:humidity", ga="humidityAmbientPercent"}
+Number:Pressure         B_Cellar_Pressure           "Pression [%.1f %unit%]"      <pressure>             (B_Cellar, gPressure_Z4)                   {channel="mqtt:topic:mosquitto:thp_cellar:pressure"}
+Number                  B_Cellar_THPSignal          "Cave [%d]"                   <signal>               (B_Cellar, gSignal)                        {channel="mqtt:topic:mosquitto:thp_cellar:quality"}
+Dimmer                  B_Cellar_THPBattery         "Cave [%d %%]"                <battery>              (B_Cellar, gBattery)                       {channel="mqtt:topic:mosquitto:thp_cellar:battery"}
+// Garage
+Number:Temperature      B_Garage_LocalTemp          "Local [%.1f %unit%]"         <temperature>          (B_Garage)                                 {channel="mqtt:topic:mosquitto:thp_garage:temperature"}
+Number:Temperature      B_Garage_Temperature        "Garage [%.1f %unit%]"        <temperature>          (B_Garage, gTemp_Z4)                       {channel="mqtt:topic:mosquitto:thp_garage:temperature", ga="temperatureAmbientCelsius"}
+Number                  B_Garage_Humidity           "Humidité [%.1f %%]"          <humidity>             (B_Garage, gHumidity_Z4)                   {channel="mqtt:topic:mosquitto:thp_garage:humidity", ga="humidityAmbientPercent"}
+Number:Pressure         B_Garage_Pressure           "Pression [%.1f %unit%]"      <pressure>             (B_Garage, gPressure_Z4)                   {channel="mqtt:topic:mosquitto:thp_garage:pressure"}
+Number                  B_Garage_THPSignal          "Garage [%d]"                 <signal>               (B_Garage, gSignal)                        {channel="mqtt:topic:mosquitto:thp_garage:quality"}
+Dimmer                  B_Garage_THPBattery         "Garage [%d %%]"              <battery>              (B_Garage, gBattery)                       {channel="mqtt:topic:mosquitto:thp_garage:battery"}
+// Attic
+Number:Temperature      AT_StorageRoom_Temperature  "Grenier [%.1f %unit%]"       <temperature>          (AT_StorageRoom, gTemp_Z5)                 {channel="mqtt:topic:mosquitto:thp_attic:temperature", ga="temperatureAmbientCelsius"}
+Number                  AT_StorageRoom_Humidity     "Humidité [%.1f %%]"          <humidity>             (AT_StorageRoom, gHumidity_Z5)             {channel="mqtt:topic:mosquitto:thp_attic:humidity", ga="humidityAmbientPercent"}
+Number:Pressure         AT_StorageRoom_Pressure     "Pression [%.1f %unit%]"      <pressure>             (AT_StorageRoom, gPressure_Z5)             {channel="mqtt:topic:mosquitto:thp_attic:pressure"}
+Number                  AT_StorageRoom_THPSignal    "Grenier [%d]"                <signal>               (AT_StorageRoom, gSinal)                   {channel="mqtt:topic:mosquitto:thp_attic:quality"}
+Dimmer                  AT_StorageRoom_THPBattery   "Grenier [%d %%]"             <battery>              (AT_StorageRoom, gBattery)                 {channel="mqtt:topic:mosquitto:thp_attic:battery"}

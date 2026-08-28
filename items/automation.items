@@ -1,0 +1,46 @@
+//****************************************************************************************
+//System:     OpenHAB version 2.5
+//File:       automation.items
+//Purpose:    To define items used by the Scheduling System (Heating and Watering)
+//Author :    Jaime Rubio 2023 (c)
+//*****************************************************************************************
+
+// Time Picker
+Group           gTimepicker
+Group           gTimepickerObserver
+String          TimelineHelper  "[%s]"
+String          TransferItem1   "[%s]"          (gTimepicker)
+String          TransferItem2   "[%s]"          (gTimepicker)
+String          SelectedZone    "[%s]"           
+
+// Schedule
+Group	 gSchedule      "Schedule"                    <time>       (Home)
+DateTime Day_Start      "Day time [%1$tH:%1$tM]"      <time>       (gSchedule)    { channel="astro:sun:local:rise#start" }
+DateTime Day_End        "Night time [%1$tH:%1$tM]"    <time>       (gSchedule)    { channel="astro:sun:local:set#start" }
+Switch   Daylight       "Daylight"                    <time>       (gSchedule)  
+Number   AlarmClock     "Alarm Clock"
+String   CallState      "Call state"
+
+//  Watering
+Group           gWatering           (Home)
+String          Watering_Season     "Season [%s]"                       (gWatering)   { channel="astro:sun:local:season#name"[profile="transform:MAP", function="fr.map", sourceFormat="%s"]}
+Number          Watering_RunTime    "Duration"                          (gWatering)
+Switch          Watering_Timer      "Timer"                             (gWatering)
+Number          Watering_Rain       "Rain"                              (gWatering)
+String          Watering_Status     "State"                             (gWatering)
+Switch          Watering_Toggle     "State toggle"                      (gWatering)
+
+// Watering mode AUTO / ON / OFF
+Group           gWateringModes                                          (gWatering)
+String          WateringMode_State  "Selected watering mode"            (gWateringModes)
+Switch          WateringMode_Auto   "Automatic"                         (gWateringModes)
+Switch          WateringMode_Manual "Manual mode"                       (gWateringModes)
+Switch          WateringMode_Off    "Off"                               (gWateringModes)
+
+// Watering Switches
+Group:Switch:OR(ON, OFF)    gWateringSwitches               (gWatering)
+Switch          WateringSwitch_Z1         "Zone 1"          (gWateringSwitches)      {channel="mqtt:topic:mosquitto:watering:ssw_watering1", ga="Sprinkler"}
+Switch          WateringSwitch_Z2         "Zone 2"          (gWateringSwitches)      {channel="mqtt:topic:mosquitto:watering:ssw_watering2", ga="Sprinkler"}
+Switch          WateringSwitch_Z3         "Zone 3"          (gWateringSwitches)      {channel="mqtt:topic:mosquitto:watering:ssw_watering3", ga="Sprinkler"}
+Switch          WateringSwitch_Z4         "Zone 4"          (gWateringSwitches)      {channel="mqtt:topic:mosquitto:watering:ssw_watering4", ga="Sprinkler"} 
+

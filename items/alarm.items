@@ -1,0 +1,47 @@
+/****************************************************************************************
+System:     OpenHAB version 2.5
+File:       alarm.items
+Purpose:    To define items used by the Alarm system
+Author :    Jaime Rubio 2023 (c)
+*****************************************************************************************/
+
+// Security Alarm
+Group	gAL				"Alarm"             (Home)    
+String	AL_Typed		"Code"   	        (gAL)						
+Switch	AL_On			"Alarm ON"	        (gAL)	 
+Switch	AL_LED  		"Alarm LED"	        (gAL)
+Switch	AL_Trigger		"Alarm trigger"     (gAL)
+String  AL_Mail         "Alarm mail"        (gAL)
+
+// Sensors
+Contact         B_LaundryRoom_Door          "Laundryroom door"      <door>          (B_LaundryRoom, gMotion)                    {channel="mqtt:topic:mosquitto:rflink:door1"}
+Switch          B_LaundryRoom_Waterleakage  "Leakage"               <water>         (B_LaundryRoom, gSensor)                    {channel="mqtt:topic:mosquitto:rflink:leakage1"} 
+Switch          B_LaundryRoom_CO            "Gaz"                   <smoke>         (B_LaundryRoom, gSensor)                    {channel="mqtt:topic:mosquitto:sensors:ssw_gas"}            
+Switch          B_LaundryRoom_Smoke         "Smoke basement"        <smoke>         (B_LaundryRoom, gSensor)                    {channel="mqtt:topic:mosquitto:rflink:smoke1"}            
+Switch          GF_Entryway_Smoke           "Smoke entryway"        <smoke>         (GF_Entryway, gSensor)                      {channel="mqtt:topic:mosquitto:rflink:smoke2"}            
+
+// Motion sensors
+Contact          GF_Entryway_Motion          "PIR Entryway"         <motion>        (GF_Entryway, gMotion, gMotionLight)        {channel="mqtt:topic:mosquitto:rflink:PIR1"}
+Contact          GF_MasterBedroom_Motion     "PIR Master bedroom"   <motion>        (GF_Masterbedroom, gMotion)                 {channel="mqtt:topic:mosquitto:rflink:PIR2"} 
+Contact          GF_Kitchen_Motion           "PIR Kitchen"          <motion>        (GF_Kitchen, gMotion)                       {channel="mqtt:topic:mosquitto:rflink:PIR3"} 
+Contact          GF_Lounge_Motion            "PIR Lounge"           <motion>        (GF_Lounge, gMotion, gMotionLight)          {channel="mqtt:topic:mosquitto:rflink:PIR4"} 
+Contact          B_Garage_Motion             "PIR Garage"           <motion>        (B_Garage, gMotion)                         {channel="mqtt:topic:mosquitto:rflink:PIR5"}            
+Contact          FF_Corridor_Motion          "PIR Mezza"            <motion>        (FF_Corridor, gMotion, gMotionLight)        {channel="mqtt:topic:mosquitto:rflink:PIR6"}            
+
+// Motion sensors enable/disable
+Switch          GF_Entryway_MotionSwitch      "Entryway"        <switch>        (GF_Entryway, gMotionSwitch)  
+Switch          GF_MasterBedroom_MotionSwitch "Master bedroom"  <switch>        (GF_Masterbedroom, gMotionSwitch) 
+Switch          GF_Kitchen_MotionSwitch       "Kitchen"         <switch>        (GF_Kitchen, gMotionSwitch)       
+Switch          GF_Lounge_MotionSwitch        "Lounge"          <switch>        (GF_Lounge, gMotionSwitch)        
+Switch          B_Garage_MotionSwitch         "Garage"          <switch>        (B_Garage, gMotionSwitch)         
+Switch		    FF_Corridor_MotionSwitch      "Mezzanine"       <switch>	    (FF_Corridor, gMotionSwitch)
+Switch		    B_LaundryRoom_DoorSwitch      "Laundryroom"     <switch>        (B_LaundryRoom, gMotionSwitch)
+
+// Keys (gRFKey)
+Group gRFKey            (Home)
+String RFKey1           "Keyfob 1"     (Home, gRFKey)        {channel="mqtt:topic:mosquitto:rflink:key1"}
+
+// Phone presence
+Group:Switch:OR(ON, OFF) gPhones        "Phones"     (Home)         
+Switch  Phone1    "My Phone"            (gPhones)             {channel="network:pingdevice:my_phone:online"}
+
