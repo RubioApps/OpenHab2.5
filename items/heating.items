@@ -3,7 +3,6 @@ System:     OpenHAB version 2.5
 File:       heating.items
 Purpose:    To define items used by the Heating System
 Author :    Jaime Rubio 2023 (c)
-Notes:      I put the labels in French because they are often used by the UI HabPanel
 *****************************************************************************************/
 
 //**********************************************************************************
